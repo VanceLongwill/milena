@@ -87,3 +87,13 @@ milena --topic my-topic -o=beginning
 2. `cargo install --path .`
 
 
+### Troubleshooting
+
+#### CMake can't find openssl/libsasl2
+
+Ensure that `openssl@1.1` installed with brew & set the following environment variables.
+
+```
+export OPENSSL_ROOT_DIR=$(brew --prefix openssl@1.1)
+export OPENSSL_LIBRARIES="${OPENSSL_ROOT_DIR}/lib"
+```
