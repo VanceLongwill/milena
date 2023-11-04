@@ -47,7 +47,7 @@ fn get_headers(b: &BorrowedHeaders) -> HashMap<String, String> {
     headers
 }
 
-pub struct MessageDumper<W: AsyncWrite + Unpin> {
+pub struct Consumer<W: AsyncWrite + Unpin> {
     pool: DescriptorPool,
     message_name_header: String,
     output: W,
@@ -58,7 +58,7 @@ fn trim_bytes(x: usize, b: &[u8]) -> &[u8] {
     &b[x..]
 }
 
-impl<W: AsyncWrite + Unpin> MessageDumper<W> {
+impl<W: AsyncWrite + Unpin> Consumer<W> {
     pub fn new(
         pool: DescriptorPool,
         output: W,
