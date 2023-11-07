@@ -12,32 +12,37 @@ A CLI for consuming kafka messages.
 ### Usage
 
 ```sh
-❯ milena --help
-Usage: milena [OPTIONS] --topic <TOPIC>
+milena help [command]
+```
+
+#### Consume
+
+```sh
+❯ milena help consume
+Usage: milena consume [OPTIONS] --topic <TOPIC> <--message-name <MESSAGE_NAME>|--message-name-from-header <MESSAGE_NAME_FROM_HEADER>>
 
 Options:
   -t, --topic <TOPIC>
           Name of the topic to consume
 
-  -c, --config <FILE>
+  -N, --message-name <MESSAGE_NAME>
+          The protobuf message name itself. Useful when there's only one schema per topic
+
+  -F, --config <FILE>
           Sets a custom config file
 
-          [default: ~/.config/kafka.config]
+  -H, --message-name-from-header <MESSAGE_NAME_FROM_HEADER>
+          The message name header key that contains the message type as the value to enable dynamic decoding. Useful when there's more than one message type/schema per topic, but requires that the protobuf message name is present in the specified header
 
-  -d, --descriptors <DESCRIPTORS>
+  -f, --file-descriptors <FILE_DESCRIPTORS>
           The path to the protobuf file descriptors
 
-          [default: ./descriptors.bin]
-
-      --message-name-header <MESSAGE_NAME_HEADER>
-          The message header key that contains the message type as the value to enable dynamic decoding
-
-          [default: message-name]
+          [default: ./descriptors.binpb]
 
   -g, --group-id <GROUP_ID>
           The consumer group id to use, defaults to a v4 uuid
 
-          [default: 951c948e-21f7-41a3-9257-8cc05bd2149e]
+          [default: e8642122-b0c9-405b-9a28-2919365668dc]
 
   -o, --offset=<OFFSET>
           The offset for the topic
@@ -49,45 +54,85 @@ Options:
           - end:       Start consuming from the end of the partition
           - stored:    Start consuming from the stored offset
 
-  -r, --rdkafka-options <RDKAFKA_OPTIONS>
-          A catchall for specifying additional librdkafka options in the format `<k1>=<v1>,<k2>=<v2>,...` (takes precedence over config file)
+  -X, --rdkafka-options <RDKAFKA_OPTIONS>
+          A catchall for specifying additional librdkafka options
 
-  -t, --trim-leading-bytes <TRIM_LEADING_BYTES>
-          Trim a number of bytes from the start of the payload
+  -T, --trim-leading-bytes <TRIM_LEADING_BYTES>
+          Trim a number of bytes from the start of the payload before attempting to deserialize
 
   -h, --help
           Print help (see a summary with '-h')
-
-  -V, --version
-          Print version
 ```
+
+#### Produce
+
+```sh
+❯ milena help produce
+Usage: milena produce [OPTIONS] --topic <TOPIC> --data <DATA> --key <KEY> --message-name <MESSAGE_NAME>
+
+Options:
+  -t, --topic <TOPIC>
+          Name of the topic to produce to
+  -d, --data <DATA>
+          Data to send to the topic, curl style
+  -F, --config <FILE>
+          Sets a custom config file
+  -H, --header <HEADERS>
+          Message headers <header=value>. Can be supplied more than once
+  -f, --file-descriptors <FILE_DESCRIPTORS>
+          The path to the protobuf file descriptors [default: ./descriptors.binpb]
+  -k, --key <KEY>
+          Key for the message
+  -m, --message-name <MESSAGE_NAME>
+          The fully qualified name of the protobuf message
+  -X, --rdkafka-options <RDKAFKA_OPTIONS>
+          A catchall for specifying additional librdkafka options
+  -h, --help
+          Print help
+```
+
 
 #### Example:
 
+Produce protobuf messages from JSON to a topic
+
 ```sh
-milena --topic my-topic -o=beginning
+milena produce \
+  -X bootstrap.servers=localhost:9092 \
+  --topic sometopic \
+  --file-descriptors descriptors.binpb \
+  --message-name example.v1.UserUpdated \
+  --key 123 \
+  --header 'message-name=example.v1.UserUpdated' \
+  --data '{"name": "John Smith", "age": 40}'
 ```
 
-#### Output 
-
-> with `RUST_LOG="info,librdkafka=trace,rdkafka::client=debug"`
+Consume those messages as JSON
 
 ```sh
-... // @TODO
+milena consume \
+  -X bootstrap.servers=localhost:9092 \
+  -t sometopic \
+  -f descriptors.binpb \
+  -H "message-name" \
+  -o=beginning
 ```
 
 ## Installation
 
 ### Prerequisites
 
-- An INI formatted kakfa config file as used by `kcat`. This will be used to connect to the kafka cluster. By default the CLI looks for the config file at `$HOME/.config/kafka.config` although you can specify a different location with the `--config` flag.
-- A compiled protobuf file descriptor set // @TODO: add instructions
+- A compiled protobuf file descriptor set
 
 1. Clone this repo
 2. `cargo install --path .`
 
 
 ### Troubleshooting
+
+#### Extended logging
+
+Set `RUST_LOG="info,librdkafka=trace,rdkafka::client=debug"`
 
 #### CMake can't find openssl/libsasl2
 
