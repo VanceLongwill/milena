@@ -25,7 +25,7 @@ pub struct ProduceArgs {
     data: String,
 
     /// Message headers <header=value>. Can be supplied more than once.
-    #[arg(short = 'H', long)]
+    #[arg(short = 'H', long = "header")]
     headers: Vec<String>,
 
     /// Key for the message
@@ -154,7 +154,7 @@ fn parse_headers(
     Ok(headers
         .into_iter()
         .map(|header| {
-            let mut parts = header.as_ref().splitn(2, ':');
+            let mut parts = header.as_ref().splitn(2, '=');
             match (parts.next(), parts.next()) {
                 (Some(key), Some(value)) => Ok((key.to_string(), value.to_string())),
                 _ => Err(anyhow::anyhow!("invalid header")),
