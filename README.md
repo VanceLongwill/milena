@@ -1,13 +1,20 @@
 # Milena
 
-A CLI for consuming kafka messages.
+A CLI for consuming protobuf messages over Kakfa.
+
+Wrangling `kcat` and `protoc` can be difficult or impossible in some cases. Milena aims to provide an easy interface
+for producing & consuming protobuf encoded messages over Kafka.
 
 ### Features :sparkles:
 
-- Deals with pesky magic bytes
-- Will dynamically decode any protobuf message typ
+- Dynamically decodes any protobuf message type in the provided file descriptors
 - Outputs messages as newline delimited JSON with an envelope containing common metadata
+- Produces protobuf messages from JSON
+- Deals with pesky magic bytes `-T`
 
+### Screencast
+
+![milena screencast](./milena-screencast.gif)
 
 ### Usage
 
@@ -122,7 +129,9 @@ milena consume \
 
 ### Prerequisites
 
-- A compiled protobuf file descriptor set
+- [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
+- openssl@1.1
+- A compiled [protobuf file descriptor set](#getting-file-descriptors)
 
 1. Clone this repo
 2. `cargo install --path .`
@@ -130,7 +139,7 @@ milena consume \
 
 ### Troubleshooting
 
-#### Extended logging
+#### Extended logging
 
 Set `RUST_LOG="info,librdkafka=trace,rdkafka::client=debug"`
 
@@ -141,4 +150,20 @@ Ensure that `openssl@1.1` installed with brew & set the following environment va
 ```
 export OPENSSL_ROOT_DIR=$(brew --prefix openssl@1.1)
 export OPENSSL_LIBRARIES="${OPENSSL_ROOT_DIR}/lib"
+```
+
+## Getting file descriptors
+
+Protobuf file descriptors can be generated using the [buf](https://buf.build/docs/build/explanation) CLI or with [protoc](protoc).
+
+#### With buf:
+
+```sh
+buf build ./ -o descriptors.binpb
+```
+
+#### With protoc:
+
+```sh
+protoc example.proto -o protocdescriptors.binpb
 ```
