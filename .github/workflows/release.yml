@@ -22,14 +22,14 @@ on:
     # branches:
     # - ag/work
     tags:
-    - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+"
 jobs:
   create-release:
     name: create-release
     runs-on: ubuntu-latest
     # env:
-      # Set to force version number, e.g., when no tag exists.
-      # MILENA_VERSION: TEST-0.0.0
+    # Set to force version number, e.g., when no tag exists.
+    # MILENA_VERSION: TEST-0.0.0
     outputs:
       milena_version: ${{ env.MILENA_VERSION }}
     steps:
@@ -47,7 +47,7 @@ jobs:
 
   build-release:
     name: build-release
-    needs: ['create-release']
+    needs: ["create-release"]
     runs-on: ${{ matrix.os }}
     env:
       # For some builds, we use cross to test on 32-bit and big-endian
@@ -65,110 +65,110 @@ jobs:
       matrix:
         build: [linux, linux-arm, macos, win-msvc, win-gnu, win32-msvc]
         include:
-        - build: linux
-          os: ubuntu-latest
-          rust: nightly
-          target: x86_64-unknown-linux-musl
-        - build: linux-arm
-          os: ubuntu-latest
-          rust: nightly
-          target: arm-unknown-linux-gnueabihf
-        - build: macos
-          os: macos-latest
-          rust: nightly
-          target: x86_64-apple-darwin
-        - build: win-msvc
-          os: windows-latest
-          rust: nightly
-          target: x86_64-pc-windows-msvc
-        - build: win-gnu
-          os: windows-latest
-          rust: nightly-x86_64-gnu
-          target: x86_64-pc-windows-gnu
-        - build: win32-msvc
-          os: windows-latest
-          rust: nightly
-          target: i686-pc-windows-msvc
+          - build: linux
+            os: ubuntu-latest
+            rust: nightly
+            target: x86_64-unknown-linux-musl
+          - build: linux-arm
+            os: ubuntu-latest
+            rust: nightly
+            target: arm-unknown-linux-gnueabihf
+          - build: macos
+            os: macos-latest
+            rust: nightly
+            target: x86_64-apple-darwin
+          - build: win-msvc
+            os: windows-latest
+            rust: nightly
+            target: x86_64-pc-windows-msvc
+          - build: win-gnu
+            os: windows-latest
+            rust: nightly-x86_64-gnu
+            target: x86_64-pc-windows-gnu
+          - build: win32-msvc
+            os: windows-latest
+            rust: nightly
+            target: i686-pc-windows-msvc
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Install packages (Ubuntu)
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        ci/ubuntu-install-packages
+      #- name: Install packages (Ubuntu)
+      #  if: matrix.os == 'ubuntu-latest'
+      #  run: |
+      #    ci/ubuntu-install-packages
 
-    - name: Install packages (macOS)
-      if: matrix.os == 'macos-latest'
-      run: |
-        ci/macos-install-packages
+      #- name: Install packages (macOS)
+      #  if: matrix.os == 'macos-latest'
+      #  run: |
+      #    ci/macos-install-packages
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: ${{ matrix.rust }}
-        target: ${{ matrix.target }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          target: ${{ matrix.target }}
 
-    - name: Use Cross
-      shell: bash
-      run: |
-        cargo install cross
-        echo "CARGO=cross" >> $GITHUB_ENV
-        echo "TARGET_FLAGS=--target ${{ matrix.target }}" >> $GITHUB_ENV
-        echo "TARGET_DIR=./target/${{ matrix.target }}" >> $GITHUB_ENV
+      - name: Use Cross
+        shell: bash
+        run: |
+          cargo install cross
+          echo "CARGO=cross" >> $GITHUB_ENV
+          echo "TARGET_FLAGS=--target ${{ matrix.target }}" >> $GITHUB_ENV
+          echo "TARGET_DIR=./target/${{ matrix.target }}" >> $GITHUB_ENV
 
-    - name: Show command used for Cargo
-      run: |
-        echo "cargo command is: ${{ env.CARGO }}"
-        echo "target flag is: ${{ env.TARGET_FLAGS }}"
-        echo "target dir is: ${{ env.TARGET_DIR }}"
+      - name: Show command used for Cargo
+        run: |
+          echo "cargo command is: ${{ env.CARGO }}"
+          echo "target flag is: ${{ env.TARGET_FLAGS }}"
+          echo "target dir is: ${{ env.TARGET_DIR }}"
 
-    - name: Build release binary
-      run: ${{ env.CARGO }} build --verbose --release --features pcre2 ${{ env.TARGET_FLAGS }}
+      - name: Build release binary
+        run: ${{ env.CARGO }} build --verbose --release ${{ env.TARGET_FLAGS }}
 
-    - name: Strip release binary (linux, macos and macos-arm)
-      if: matrix.build == 'linux' || matrix.os == 'macos'
-      run: strip "target/${{ matrix.target }}/release/rg"
+      - name: Strip release binary (linux, macos and macos-arm)
+        if: matrix.build == 'linux' || matrix.os == 'macos'
+        run: strip "target/${{ matrix.target }}/release/rg"
 
-    - name: Strip release binary (arm)
-      if: matrix.build == 'linux-arm'
-      run: |
-        docker run --rm -v \
-          "$PWD/target:/target:Z" \
-          rustembedded/cross:arm-unknown-linux-gnueabihf \
-          arm-linux-gnueabihf-strip \
-          /target/arm-unknown-linux-gnueabihf/release/rg
+      - name: Strip release binary (arm)
+        if: matrix.build == 'linux-arm'
+        run: |
+          docker run --rm -v \
+            "$PWD/target:/target:Z" \
+            rustembedded/cross:arm-unknown-linux-gnueabihf \
+            arm-linux-gnueabihf-strip \
+            /target/arm-unknown-linux-gnueabihf/release/rg
 
-    - name: Build archive
-      shell: bash
-      run: |
-        outdir="$(ci/cargo-out-dir "${{ env.TARGET_DIR }}")"
-        staging="milena-${{ needs.create-release.outputs.milena_version }}-${{ matrix.target }}"
-        mkdir -p "$staging"/{complete,doc}
+      - name: Build archive
+        shell: bash
+        run: |
+          outdir="$(ci/cargo-out-dir "${{ env.TARGET_DIR }}")"
+          staging="milena-${{ needs.create-release.outputs.milena_version }}-${{ matrix.target }}"
+          mkdir -p "$staging"/{complete,doc}
 
-        cp {README.md,COPYING,UNLICENSE,LICENSE-MIT} "$staging/"
-        cp {CHANGELOG.md,FAQ.md,GUIDE.md} "$staging/doc/"
-        cp "$outdir"/{milena.bash,milena.fish,_milena.ps1} "$staging/complete/"
-        cp complete/_milena "$staging/complete/"
+          cp {README.md,COPYING,UNLICENSE,LICENSE-MIT} "$staging/"
+          cp {CHANGELOG.md,FAQ.md,GUIDE.md} "$staging/doc/"
+          cp "$outdir"/{milena.bash,milena.fish,_milena.ps1} "$staging/complete/"
+          cp complete/_milena "$staging/complete/"
 
-        if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          cp "target/${{ matrix.target }}/release/milena.exe" "$staging/"
-          7z a "$staging.zip" "$staging"
-          certutil -hashfile "$staging.zip" SHA256 > "$staging.zip.sha256"
-          echo "ASSET=$staging.zip" >> $GITHUB_ENV
-          echo "ASSET_SUM=$staging.zip.sha256" >> $GITHUB_ENV
-        else
-          # The man page is only generated on Unix systems. ¯\_(ツ)_/¯
-          cp "$outdir"/milena.1 "$staging/doc/"
-          cp "target/${{ matrix.target }}/release/milena" "$staging/"
-          tar czf "$staging.tar.gz" "$staging"
-          shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
-          echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
-          echo "ASSET_SUM=$staging.tar.gz.sha256" >> $GITHUB_ENV
-        fi
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.target }}/release/milena.exe" "$staging/"
+            7z a "$staging.zip" "$staging"
+            certutil -hashfile "$staging.zip" SHA256 > "$staging.zip.sha256"
+            echo "ASSET=$staging.zip" >> $GITHUB_ENV
+            echo "ASSET_SUM=$staging.zip.sha256" >> $GITHUB_ENV
+          else
+            # The man page is only generated on Unix systems. ¯\_(ツ)_/¯
+            cp "$outdir"/milena.1 "$staging/doc/"
+            cp "target/${{ matrix.target }}/release/milena" "$staging/"
+            tar czf "$staging.tar.gz" "$staging"
+            shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
+            echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
+            echo "ASSET_SUM=$staging.tar.gz.sha256" >> $GITHUB_ENV
+          fi
 
-    - name: Upload release archive
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: gh release upload ${{ needs.create-release.outputs.milena_version }} ${{ env.ASSET }} ${{ env.ASSET_SUM }}
+      - name: Upload release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ needs.create-release.outputs.milena_version }} ${{ env.ASSET }} ${{ env.ASSET_SUM }}
