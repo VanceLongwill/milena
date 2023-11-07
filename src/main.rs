@@ -11,6 +11,7 @@ use tokio::signal;
 use milena::consumer::{start_consumer, ConsumeArgs};
 use milena::producer::{ProduceArgs, ProtoProducer};
 
+#[derive(Debug, Default)]
 struct KafkaConfig(HashMap<String, String>);
 
 impl From<KafkaConfig> for ClientConfig {
@@ -41,14 +42,6 @@ impl KafkaConfig {
     }
 }
 
-fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_default()
-}
-
-fn default_config_path() -> PathBuf {
-    PathBuf::from(format!("{}/.config/kafka.config", home_dir()).to_string())
-}
-
 #[derive(Subcommand, Debug)]
 enum Command {
     Consume(ConsumeArgs),
@@ -62,8 +55,8 @@ struct Cli {
     command: Command,
 
     /// Sets a custom config file
-    #[arg(short = 'F', long, value_name = "FILE", global=true, default_value = default_config_path().into_os_string())]
-    config: PathBuf,
+    #[arg(short = 'F', long, value_name = "FILE", global = true)]
+    config: Option<PathBuf>,
 
     /// The path to the protobuf file descriptors
     #[arg(short, long, global = true, default_value = "./descriptors.binpb")]
@@ -81,7 +74,11 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let mut config = KafkaConfig::from_file(cli.config).await?;
+    let mut config = if let Some(config) = cli.config {
+        KafkaConfig::from_file(config).await?
+    } else {
+        KafkaConfig::default()
+    };
 
     if let Some(opts) = cli.rdkafka_options {
         for raw_option in opts {
