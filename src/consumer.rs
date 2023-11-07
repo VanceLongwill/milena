@@ -4,7 +4,7 @@ use prost_reflect::{DescriptorPool, DynamicMessage, SerializeOptions};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext};
-use rdkafka::message::{BorrowedHeaders, BorrowedMessage, Headers, Message, Timestamp};
+use rdkafka::message::{BorrowedMessage, Headers, Message, Timestamp};
 use rdkafka::topic_partition_list::TopicPartitionList;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -45,6 +45,12 @@ pub struct ConsumeArgs {
     /// Trim a number of bytes from the start of the payload before attempting to deserialize
     #[arg(short = 'T', long)]
     trim_leading_bytes: Option<usize>,
+
+    /// Decode the message key using a protobuf message
+    key_message_name: Option<String>,
+
+    /// Decode a header value with the given protobuf message in the format `<header-name>=<message-name>`
+    header_message_name: Option<Vec<String>>,
 }
 
 pub struct Payload(DynamicMessage);
@@ -62,32 +68,28 @@ impl Serialize for Payload {
 /// Envelope represents a kafka message along with its relevant metadata
 #[derive(Serialize)]
 pub struct Envelope {
-    headers: Option<HashMap<String, String>>,
+    headers: Option<HashMap<String, Value>>,
     payload: Payload,
     offset: i64,
     timestamp: Option<i64>,
-    key: Option<String>,
+    key: Option<Value>,
     partition: i32,
     topic: String,
 }
 
-fn get_headers(b: &BorrowedHeaders) -> HashMap<String, String> {
-    let mut headers = HashMap::new();
-    for i in 0..b.count() {
-        let Some((k, v)) = b.get(i) else {
-            debug!("no more headers");
-            break;
-        };
-        match String::from_utf8(v.into()) {
-            Ok(value) => {
-                headers.insert(k.to_string(), value);
-            }
-            Err(err) => {
-                warn!("failed to decode header: {err}");
-            }
-        };
+#[derive(Debug, Clone, Serialize)]
+pub enum Value {
+    Plaintext(String),
+    Protobuf(DynamicMessage),
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Plaintext(s) => s.fmt(f),
+            Value::Protobuf(p) => p.fmt(f),
+        }
     }
-    headers
 }
 
 pub struct ProtoConsumer<W: AsyncWrite + Unpin> {
@@ -95,6 +97,8 @@ pub struct ProtoConsumer<W: AsyncWrite + Unpin> {
     message_name_extractor: MessageName,
     output: W,
     trim_leading_bytes: Option<usize>,
+    header_message_names: Option<HashMap<String, String>>,
+    key_message_name: Option<String>,
 }
 
 fn trim_bytes(x: usize, b: &[u8]) -> &[u8] {
@@ -107,12 +111,16 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
         output: W,
         message_name_extractor: MessageName,
         trim_leading_bytes: Option<usize>,
+        key_message_name: Option<String>,
+        header_message_names: Option<HashMap<String, String>>,
     ) -> Self {
         Self {
             pool,
             output,
             message_name_extractor,
             trim_leading_bytes,
+            key_message_name,
+            header_message_names,
         }
     }
 
@@ -124,7 +132,40 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
                 b
             };
 
-            let maybe_headers = m.headers().map(get_headers);
+            let maybe_headers = if let Some(b) = m.headers() {
+                let mut headers = HashMap::new();
+                for i in 0..b.count() {
+                    let Some((k, v)) = b.get(i) else {
+                        debug!("no more headers");
+                        break;
+                    };
+
+                    if let Some(header_message_names) = &self.header_message_names {
+                        if let Some(message_name) = header_message_names.get(k) {
+                            let message_descriptor = self
+                                .pool
+                                .get_message_by_name(message_name)
+                                .ok_or(anyhow::anyhow!(
+                                    "cannot find header message in descriptors: {message_name}"
+                                ))?;
+                            let dynamic_message = DynamicMessage::decode(message_descriptor, v)?;
+                            headers.insert(k.to_string(), Value::Protobuf(dynamic_message));
+                        }
+                    };
+
+                    match String::from_utf8(v.into()) {
+                        Ok(value) => {
+                            headers.insert(k.to_string(), Value::Plaintext(value));
+                        }
+                        Err(err) => {
+                            warn!("failed to decode header: {err}");
+                        }
+                    };
+                }
+                Some(headers)
+            } else {
+                None
+            };
 
             let message_name = match &self.message_name_extractor {
                 MessageName::Name(name) => name.to_owned(),
@@ -146,18 +187,34 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
 
             let dynamic_message = DynamicMessage::decode(message_descriptor, trimmed)?;
 
+            let key = if let Some(key_data) = m.key() {
+                if let Some(key_message_name) = &self.key_message_name {
+                    let message_descriptor = self
+                        .pool
+                        .get_message_by_name(key_message_name)
+                        .ok_or(anyhow::anyhow!(
+                            "cannot find header message in descriptors: {message_name}"
+                        ))?;
+                    let dynamic_message = DynamicMessage::decode(message_descriptor, key_data)?;
+                    Some(Value::Protobuf(dynamic_message))
+                } else {
+                    match String::from_utf8(Vec::from(key_data)) {
+                        Ok(k) => Some(Value::Plaintext(k)),
+                        Err(err) => {
+                            warn!("failed to parse message key: {err}");
+                            None
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+
             let offset = m.offset();
             let timestamp = match m.timestamp() {
                 Timestamp::NotAvailable => None,
                 Timestamp::CreateTime(t) => Some(t),
                 Timestamp::LogAppendTime(t) => Some(t),
-            };
-            let key = match m.key().map(Vec::from).map(String::from_utf8).transpose() {
-                Ok(k) => k,
-                Err(err) => {
-                    warn!("failed to parse message key: {err}");
-                    None
-                }
             };
             let partition = m.partition();
             let topic = m.topic().to_string();
@@ -193,6 +250,8 @@ pub async fn start_consumer(
         group_id,
         offset,
         trim_leading_bytes,
+        key_message_name,
+        header_message_name,
     } = args;
     client_config.set("group.id", group_id);
 
@@ -223,11 +282,21 @@ pub async fn start_consumer(
         (None, None) => Err(anyhow::anyhow!("message name flag required")),
     }?;
 
+    let headers_messages = header_message_name.map(|v| { 
+        v.iter().map(|s| { 
+            s.split_once('=')
+                .ok_or(anyhow::anyhow!("invalid format for header message names, expected <header-name>=<message-name>"))
+                .map(|(k, v)| (k.to_string(), v.to_string())) })
+                .collect::<anyhow::Result<HashMap<_, _>>>() 
+    }).transpose()?;
+
     let mut processor = ProtoConsumer::new(
         descriptor_pool,
         output,
         message_name_extraction,
         trim_leading_bytes,
+        key_message_name,
+        headers_messages,
     );
 
     loop {
