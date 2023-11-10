@@ -33,7 +33,7 @@ pub struct ProduceArgs {
     key: String,
 
     /// The fully qualified name of the protobuf message
-    #[arg(short, long)]
+    #[arg(short = 'N', long)]
     message_name: String,
 }
 

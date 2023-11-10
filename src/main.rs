@@ -1,6 +1,8 @@
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use log::{error, info};
+use milena::decoder::{DecodeArgs, ProtoDecoder};
+use milena::encoder::{EncodeArgs, ProtoEncoder};
 use prost_reflect::DescriptorPool;
 use rdkafka::config::ClientConfig;
 use std::collections::HashMap;
@@ -46,6 +48,8 @@ impl KafkaConfig {
 enum Command {
     Consume(ConsumeArgs),
     Produce(ProduceArgs),
+    Decode(DecodeArgs),
+    Encode(EncodeArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -111,6 +115,16 @@ async fn main() -> anyhow::Result<()> {
         Command::Produce(args) => {
             let producer = ProtoProducer::new(client_config, descriptor_pool);
             producer.produce(args).await?;
+        }
+        Command::Decode(args) => {
+            let output = tokio::io::stdout();
+            let mut decoder = ProtoDecoder::new(descriptor_pool, output);
+            decoder.decode(args).await?;
+        }
+        Command::Encode(args) => {
+            let output = tokio::io::stdout();
+            let mut encoder = ProtoEncoder::new(descriptor_pool, output);
+            encoder.encode(args).await?;
         }
     }
 
