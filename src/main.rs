@@ -46,9 +46,13 @@ impl KafkaConfig {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Consume & decode protobuf messages to JSON
     Consume(ConsumeArgs),
+    /// Encode JSON messages as protobuf and produce them to a topic
     Produce(ProduceArgs),
+    /// Decode an arbitrary protobuf message
     Decode(DecodeArgs),
+    /// Encode an arbitrary protobuf message
     Encode(EncodeArgs),
 }
 
