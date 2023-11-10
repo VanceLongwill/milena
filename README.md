@@ -19,62 +19,65 @@ for producing & consuming protobuf encoded messages over Kafka.
 ### Usage
 
 ```sh
-milena help [command]
+Usage: milena [OPTIONS] <COMMAND>
+
+Commands:
+  consume  Consume & decode protobuf messages to JSON
+  produce  Encode JSON messages as protobuf and produce them to a topic
+  decode   Decode an arbitrary protobuf message
+  encode   Encode an arbitrary protobuf message
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -F, --config <FILE>
+          Sets a custom config file
+  -f, --file-descriptors <FILE_DESCRIPTORS>
+          The path to the protobuf file descriptors [default: ./descriptors.binpb]
+  -X, --rdkafka-options <RDKAFKA_OPTIONS>
+          A catchall for specifying additional librdkafka options
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 #### Consume
 
 ```sh
-❯ milena help consume
-Usage: milena consume [OPTIONS] --topic <TOPIC> <--message-name <MESSAGE_NAME>|--message-name-from-header <MESSAGE_NAME_FROM_HEADER>>
+❯ milena consume -h
+Usage: milena consume [OPTIONS] --topic <TOPIC> <--message-name <MESSAGE_NAME>|--message-name-from-header <MESSAGE_NAME_FROM_HEADER>> [KEY_MESSAGE_NAME] [HEADER_MESSAGE_NAME]...
+
+Arguments:
+  [KEY_MESSAGE_NAME]        Decode the message key using a protobuf message
+  [HEADER_MESSAGE_NAME]...  Decode a header value with the given protobuf message in the format `<header-name>=<message-name>`
 
 Options:
   -t, --topic <TOPIC>
           Name of the topic to consume
-
   -N, --message-name <MESSAGE_NAME>
           The protobuf message name itself. Useful when there's only one schema per topic
-
-  -F, --config <FILE>
-          Sets a custom config file
-
   -H, --message-name-from-header <MESSAGE_NAME_FROM_HEADER>
           The message name header key that contains the message type as the value to enable dynamic decoding. Useful when there's more than one message type/schema per topic, but requires that the protobuf message name is present in the specified header
-
-  -f, --file-descriptors <FILE_DESCRIPTORS>
-          The path to the protobuf file descriptors
-
-          [default: ./descriptors.binpb]
-
   -g, --group-id <GROUP_ID>
-          The consumer group id to use, defaults to a v4 uuid
-
-          [default: e8642122-b0c9-405b-9a28-2919365668dc]
-
+          The consumer group id to use, defaults to a v4 uuid [default: 4ead12ea-bc48-4e2e-b75a-e8c97f4aee6f]
+  -F, --config <FILE>
+          Sets a custom config file
   -o, --offset=<OFFSET>
-          The offset for the topic
-
-          [default: end]
-
-          Possible values:
-          - beginning: Start consuming from the beginning of the partition
-          - end:       Start consuming from the end of the partition
-          - stored:    Start consuming from the stored offset
-
-  -X, --rdkafka-options <RDKAFKA_OPTIONS>
-          A catchall for specifying additional librdkafka options
-
+          The offset for the topic [default: end] [possible values: beginning, end, stored]
+  -f, --file-descriptors <FILE_DESCRIPTORS>
+          The path to the protobuf file descriptors [default: ./descriptors.binpb]
   -T, --trim-leading-bytes <TRIM_LEADING_BYTES>
           Trim a number of bytes from the start of the payload before attempting to deserialize
-
+  -X, --rdkafka-options <RDKAFKA_OPTIONS>
+          A catchall for specifying additional librdkafka options
   -h, --help
-          Print help (see a summary with '-h')
+          Print help (see more with '--help')
 ```
 
 #### Produce
 
 ```sh
-❯ milena help produce
+❯ milena produce -h
 Usage: milena produce [OPTIONS] --topic <TOPIC> --data <DATA> --key <KEY> --message-name <MESSAGE_NAME>
 
 Options:
@@ -82,16 +85,16 @@ Options:
           Name of the topic to produce to
   -d, --data <DATA>
           Data to send to the topic, curl style
-  -F, --config <FILE>
-          Sets a custom config file
   -H, --header <HEADERS>
           Message headers <header=value>. Can be supplied more than once
-  -f, --file-descriptors <FILE_DESCRIPTORS>
-          The path to the protobuf file descriptors [default: ./descriptors.binpb]
   -k, --key <KEY>
           Key for the message
-  -m, --message-name <MESSAGE_NAME>
+  -F, --config <FILE>
+          Sets a custom config file
+  -N, --message-name <MESSAGE_NAME>
           The fully qualified name of the protobuf message
+  -f, --file-descriptors <FILE_DESCRIPTORS>
+          The path to the protobuf file descriptors [default: ./descriptors.binpb]
   -X, --rdkafka-options <RDKAFKA_OPTIONS>
           A catchall for specifying additional librdkafka options
   -h, --help
@@ -99,9 +102,9 @@ Options:
 ```
 
 
-#### Example:
+### Examples
 
-Produce protobuf messages from JSON to a topic
+#### Produce protobuf messages from JSON to a topic
 
 ```sh
 milena produce \
@@ -123,6 +126,16 @@ milena consume \
   -f descriptors.binpb \
   -H "message-name" \
   -o=beginning
+```
+
+#### Encode from JSON / decode from protobuf
+
+See `milena encode -h` or `milena decode -h` for more options.
+
+```sh
+milena encode -N example.v1.UserUpdated '{"name": "alice", "age": 90}' |\
+  milena decode -N example.v1.UserUpdated
+{"name":"alice","age":90}%
 ```
 
 ## Installation
