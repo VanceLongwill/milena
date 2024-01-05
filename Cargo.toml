@@ -20,3 +20,4 @@ prost-reflect = { version = "0.12.0", features = ["serde"] }
 clap = { version = "4.4.7", features = ["derive", "string"] }
 bytes = "1.5.0"
 uuid = { version = "1.5.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
+openssl = { version = "0.10", features = ["vendored"] }
