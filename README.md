@@ -140,15 +140,17 @@ milena encode -N example.v1.UserUpdated '{"name": "alice", "age": 90}' |\
 
 ## Installation
 
-### Prerequisites
+### Prebuilt binaries
 
-- [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
-- openssl@1.1
-- A compiled [protobuf file descriptor set](#getting-file-descriptors)
+- Download the latest release archive for your platform from [the releases page](https://github.com/VanceLongwill/milena/releases)
+- Extract the archive
+- If you're on MacOS, remove the binary from quarantine
 
-1. Clone this repo
-2. `cargo install --path .`
+### With cargo
 
+```sh
+cargo install --git https://github.com/VanceLongwill/milena
+```
 
 ### Troubleshooting
 
