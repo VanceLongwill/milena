@@ -16,7 +16,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[clap(group(
+#[clap(verbatim_doc_comment, group(
     ArgGroup::new("messagenameextraction")
         .required(true)
         .args(&["message_name", "message_name_from_header"]),
@@ -41,14 +41,12 @@ pub struct ConsumeArgs {
     group_id: String,
 
     /// Offset to start consuming from:
-    ///
     ///    beginning (default) | end | stored |
     ///    <value>  (absolute offset) |
     ///    -<value> (relative offset from end)
     ///    s@<value> (timestamp in ms to start at)
     ///    e@<value> (timestamp in ms to stop at (not included))
-    ///
-    /// When s@ is used, it may be followed with e@ in order to consume messages between two
+    /// When -o=s@ is used, it may be followed with another -o=e@ in order to consume messages between two
     /// timestamps.
     #[arg(short, long, require_equals = true, verbatim_doc_comment)]
     offsets: Vec<Offset>,
