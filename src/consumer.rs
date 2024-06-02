@@ -339,7 +339,6 @@ pub async fn start_consumer(
         // add all topics with the offset defaulted to beginning
         l.add_partition_offset(&topic, *p, rdkafka::Offset::Beginning)?;
     }
-    consumer.assign(&l)?;
 
     let mut offsets = offsets.into_iter();
     let (start_offset, end_offset) = match (offsets.next(), offsets.next(), offsets.next()) {
@@ -351,6 +350,7 @@ pub async fn start_consumer(
 
     match start_offset {
         Offset::Start(start) => {
+            consumer.assign(&l)?;
             let tpl = consumer.offsets_for_timestamp(start, Duration::from_secs(1200))?;
             for el in tpl.elements() {
                 // Dont care about failing as it only indicates that the given partition has been
@@ -359,6 +359,7 @@ pub async fn start_consumer(
             }
         }
         Offset::Until(end) => {
+            consumer.assign(&l)?;
             trace!("Querying offset for timestamp {end}");
             let tpl = consumer.offsets_for_timestamp(end, Duration::from_secs(1200))?;
             max_offsets = Some(tpl);
@@ -370,6 +371,7 @@ pub async fn start_consumer(
 
     if let Some(Offset::Until(end)) = end_offset {
         trace!("Querying offset for timestamp {end}");
+        consumer.assign(&l)?;
         let tpl = consumer.offsets_for_timestamp(end, Duration::from_secs(1200))?;
         max_offsets = Some(tpl);
     };
@@ -386,6 +388,7 @@ pub async fn start_consumer(
         None
     };
 
+    consumer.assign(&l)?;
     info!("Subscribed consumer to topic {l:?}");
 
     let output = tokio::io::stdout();
