@@ -88,7 +88,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.verbose {
-        0 => (),
+        0 => {
+            // suppress all librdkafka logs as default
+            builder.filter_module("rdkafka::client", log::LevelFilter::Off);
+        }
         1 => {
             builder.filter_level(log::LevelFilter::Error);
         }
