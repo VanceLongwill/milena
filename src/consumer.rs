@@ -155,33 +155,35 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
 
             let maybe_headers = if let Some(b) = m.headers() {
                 let mut headers = HashMap::new();
-                for i in 0..b.count() {
-                    let Some((k, v)) = b.get(i) else {
-                        debug!("no more headers");
-                        break;
-                    };
+                for header in b.iter() {
+                    let k = header.key;
 
-                    if let Some(header_message_names) = &self.header_message_names {
-                        if let Some(message_name) = header_message_names.get(k) {
-                            let message_descriptor = self
-                                .pool
-                                .get_message_by_name(message_name)
-                                .ok_or(anyhow::anyhow!(
-                                    "cannot find header message in descriptors: {message_name}"
-                                ))?;
-                            let dynamic_message = DynamicMessage::decode(message_descriptor, v)?;
-                            headers.insert(k.to_string(), Value::Protobuf(dynamic_message));
-                        }
-                    };
+                    if let Some(v) = header.value {
+                        if let Some(header_message_names) = &self.header_message_names {
+                            if let Some(message_name) = header_message_names.get(k) {
+                                let message_descriptor = self
+                                    .pool
+                                    .get_message_by_name(message_name)
+                                    .ok_or(anyhow::anyhow!(
+                                        "cannot find header message in descriptors: {message_name}"
+                                    ))?;
+                                let dynamic_message =
+                                    DynamicMessage::decode(message_descriptor, v)?;
+                                headers.insert(k.to_string(), Value::Protobuf(dynamic_message));
+                            }
+                        };
 
-                    match String::from_utf8(v.into()) {
-                        Ok(value) => {
-                            headers.insert(k.to_string(), Value::Plaintext(value));
-                        }
-                        Err(err) => {
-                            warn!("failed to decode header: {err}");
-                        }
-                    };
+                        match String::from_utf8(v.into()) {
+                            Ok(value) => {
+                                headers.insert(k.to_string(), Value::Plaintext(value));
+                            }
+                            Err(err) => {
+                                warn!("failed to decode header: {err}");
+                            }
+                        };
+                    } else {
+                        headers.insert(k.to_string(), Value::Plaintext(String::default()));
+                    }
                 }
                 Some(headers)
             } else {

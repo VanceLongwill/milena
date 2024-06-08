@@ -81,7 +81,12 @@ impl ProtoProducer {
         let headers = envelope
             .headers
             .iter()
-            .fold(OwnedHeaders::new(), |acc, (k, v)| acc.add(k, v));
+            .fold(OwnedHeaders::new(), |acc, (key, value)| {
+                acc.insert(rdkafka::message::Header {
+                    key,
+                    value: Some(value),
+                })
+            });
 
         let mut msg = FutureRecord::to(&envelope.topic)
             .payload(&envelope.payload)
@@ -162,5 +167,10 @@ fn parse_headers(
         })
         .collect::<Result<Vec<_>, _>>()?
         .iter()
-        .fold(OwnedHeaders::new(), |acc, (k, v)| acc.add(k, v)))
+        .fold(OwnedHeaders::new(), |acc, (key, value)| {
+            acc.insert(rdkafka::message::Header {
+                key,
+                value: Some(value),
+            })
+        }))
 }
