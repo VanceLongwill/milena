@@ -1,6 +1,8 @@
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
+use futures::SinkExt;
 use log::{error, info};
+use milena::codec::LinesCodec;
 use milena::decoder::{DecodeArgs, ProtoDecoder};
 use milena::encoder::{EncodeArgs, ProtoEncoder};
 use prost_reflect::DescriptorPool;
@@ -9,6 +11,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs::{read, read_to_string};
 use tokio::{select, signal};
+
+use tokio_serde::formats::*;
+use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
 use milena::consumer::{start_consumer, ConsumeArgs};
 use milena::producer::{ProduceArgs, ProtoProducer};
@@ -131,12 +136,17 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Consume(args) => {
-            tokio::spawn(async move {
-                info!("Starting consumer");
-            });
+            info!("Starting consumer");
+
+            let output = tokio::io::stdout();
+
+            let codec = LinesCodec::from(tokio_util::codec::LinesCodec::new());
+            let writer = FramedWrite::new(output, codec);
+            let serialized =
+                tokio_serde::SymmetricallyFramed::new(writer, SymmetricalJson::default());
 
             select! {
-                res = start_consumer(&mut client_config, descriptor_pool, args) => {
+                res = start_consumer(&mut client_config, descriptor_pool, args, serialized) => {
                     match res {
                         Ok(()) => info!("Consumed exited successfully"),
                         Err(err) => error!("Consumer exited with an error: {err}"),

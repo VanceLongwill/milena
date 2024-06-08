@@ -1,5 +1,6 @@
 use clap::{ArgGroup, Parser};
-use futures::StreamExt;
+use futures::sink::SinkExt;
+use futures::{Sink, StreamExt};
 use log::{debug, info, trace, warn};
 use prost_reflect::{DescriptorPool, DynamicMessage, SerializeOptions};
 use rdkafka::config::ClientConfig;
@@ -8,14 +9,13 @@ use rdkafka::consumer::{Consumer, DefaultConsumerContext};
 use rdkafka::error::KafkaError;
 use rdkafka::message::{BorrowedMessage, Headers, Message, Timestamp};
 use rdkafka::topic_partition_list::TopicPartitionList;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
 use std::time::Duration;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Serialize, Deserialize)]
 #[clap(verbatim_doc_comment, group(
     ArgGroup::new("messagenameextraction")
         .required(true)
@@ -113,10 +113,9 @@ impl Display for Value {
     }
 }
 
-pub struct ProtoConsumer<W: AsyncWrite + Unpin> {
+pub struct ProtoConsumer {
     pool: DescriptorPool,
     message_name_extractor: MessageName,
-    output: W,
     trim_leading_bytes: Option<usize>,
     header_message_names: Option<HashMap<String, String>>,
     key_message_name: Option<String>,
@@ -126,10 +125,9 @@ fn trim_bytes(x: usize, b: &[u8]) -> &[u8] {
     &b[x..]
 }
 
-impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
+impl ProtoConsumer {
     pub fn new(
         pool: DescriptorPool,
-        output: W,
         message_name_extractor: MessageName,
         trim_leading_bytes: Option<usize>,
         key_message_name: Option<String>,
@@ -137,7 +135,6 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
     ) -> Self {
         Self {
             pool,
-            output,
             message_name_extractor,
             trim_leading_bytes,
             key_message_name,
@@ -145,7 +142,10 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
         }
     }
 
-    pub async fn process_message(&mut self, m: BorrowedMessage<'_>) -> anyhow::Result<()> {
+    pub async fn process_message(
+        &mut self,
+        m: BorrowedMessage<'_>,
+    ) -> anyhow::Result<Option<Envelope>> {
         if let Some(b) = m.payload() {
             let trimmed = if let Some(trim_leading_bytes) = self.trim_leading_bytes {
                 trim_bytes(trim_leading_bytes, b)
@@ -242,7 +242,7 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
             let partition = m.partition();
             let topic = m.topic().to_string();
 
-            let out = Envelope {
+            Ok(Some(Envelope {
                 headers: maybe_headers,
                 offset,
                 timestamp,
@@ -250,14 +250,10 @@ impl<W: AsyncWrite + Unpin> ProtoConsumer<W> {
                 partition,
                 topic,
                 payload: Payload(dynamic_message),
-            };
-
-            let mut out = serde_json::to_vec(&out)?;
-            out.push(b'\n');
-            self.output.write_all(&out).await?;
-        };
-
-        Ok(())
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -287,11 +283,17 @@ fn get_absolute_offset(
     }
 }
 
-pub async fn start_consumer(
+pub async fn start_consumer<W>(
     client_config: &mut ClientConfig,
     descriptor_pool: DescriptorPool,
     args: ConsumeArgs,
-) -> anyhow::Result<()> {
+    mut output: W,
+) -> anyhow::Result<()>
+where
+    W: Sink<Envelope> + std::marker::Unpin,
+    W::Error: Send + Sync,
+    anyhow::Error: From<W::Error>,
+{
     let ConsumeArgs {
         topic,
         message_name,
@@ -367,7 +369,7 @@ pub async fn start_consumer(
             max_offsets = Some(tpl);
         }
         offset => {
-            l.set_all_offsets(offset.try_into()?)?;
+            l.set_all_offsets(rdkafka::Offset::try_from(offset)?)?;
         }
     }
 
@@ -393,8 +395,6 @@ pub async fn start_consumer(
     consumer.assign(&l)?;
     info!("Subscribed consumer to topic {l:?}");
 
-    let output = tokio::io::stdout();
-
     let message_name_extraction = match (message_name, message_name_from_header) {
         (Some(name), _) => Ok(MessageName::Name(name)),
         (_, Some(header)) => Ok(MessageName::HeaderKey(header)),
@@ -418,7 +418,6 @@ pub async fn start_consumer(
 
     let mut processor = ProtoConsumer::new(
         descriptor_pool,
-        output,
         message_name_extraction,
         trim_leading_bytes,
         key_message_name,
@@ -470,7 +469,11 @@ pub async fn start_consumer(
                 received += 1;
 
                 match processor.process_message(m).await {
-                    Ok(()) => info!("processed message"),
+                    Ok(Some(message)) => {
+                        output.send(message).await?;
+                        info!("processed message");
+                    }
+                    Ok(None) => warn!("message has no payload"),
                     Err(e) => warn!("failed to process message: {e}"),
                 };
 
@@ -486,7 +489,7 @@ pub async fn start_consumer(
     Ok(())
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Offset {
     /// Start consuming from the beginning of the partition.
     Beginning,
