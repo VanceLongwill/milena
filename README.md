@@ -101,6 +101,74 @@ Options:
           Print help
 ```
 
+#### Serve
+
+```sh
+Usage: milena serve [OPTIONS]
+
+Options:
+  -p, --port <PORT>
+          Port to run the server on
+  -F, --config <FILE>
+          Sets a custom config file
+  -f, --file-descriptors <FILE_DESCRIPTORS>
+          The path to the protobuf file descriptors [default: ./descriptors.binpb]
+  -X, --rdkafka-options <RDKAFKA_OPTIONS>
+          A catchall for specifying additional librdkafka options
+  -v, --verbose...
+          Enable verbose logging, can be repeated for more verbosity up to 5 times
+  -h, --help
+          Print help
+```
+
+`milena` can also proxy kafka/protobuf to HTTP/json using the `serve`
+command. Each request starts a new consumer stream.
+
+This provides a number of advantages:
+- Developers can read protobuf encoded kakfa messages without having to install another tool (just curl it)
+- Consume only access to Kafka
+- Credentials need only reside in a single server (this could live
+  within your network for devs to access).
+- Develops don't have to compile protobuf file descriptors. It's all
+  just done once and can be automated via CI/CD.
+
+```sh
+milena serve -p 29999 \
+	-X bootstrap.servers=localhost:9092 \
+	-f descriptors.binpb
+```
+
+##### With curl
+
+> The JSON request body can contain any option provided to the `consume`
+> command. See `milena consume -h` for more details.
+
+###### Stream all messages from the earliest available to the end of the topic.
+
+```sh
+curl localhost:29999 -H 'Content-type: application/json' -d '{
+        "topic": "sometopic",
+        "message_name_from_header": "message-name",
+        "exit_on_last": true
+}'
+```
+
+###### Stream from the end of the topic onward without exiting
+
+(while also simultaneously piping to `jq` for pretty printing)
+
+```sh
+curl localhost:29999 -H 'Content-type: application/json' -d '{
+        "topic": "sometopic",
+        "message_name_from_header": "message-name",
+        "offsets": ["end"]
+}' -N -s | jq -rc
+```
+
+> -  `-N` prevents curl buffering the output so we can can pipe it to jq as
+soon as we receive something.   
+> - `-s` hides other output from curl 
+
 
 ### Examples
 

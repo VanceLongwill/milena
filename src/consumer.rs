@@ -1,20 +1,22 @@
 use clap::{ArgGroup, Parser};
-use futures::sink::SinkExt;
-use futures::{Sink, Stream, StreamExt};
+use futures::Stream;
 use log::{debug, info, trace, warn};
 use prost_reflect::{DescriptorPool, DynamicMessage, SerializeOptions};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
-use rdkafka::consumer::{Consumer, DefaultConsumerContext, MessageStream};
+use rdkafka::consumer::{Consumer, DefaultConsumerContext};
 use rdkafka::error::KafkaError;
 use rdkafka::message::{BorrowedMessage, Headers, Message, Timestamp};
 use rdkafka::topic_partition_list::TopicPartitionList;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
-use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+
+fn uuid() -> String {
+    Uuid::new_v4().to_string()
+}
 
 #[derive(Parser, Debug, Serialize, Deserialize)]
 #[clap(verbatim_doc_comment, group(
@@ -38,7 +40,8 @@ pub struct ConsumeArgs {
     pub message_name_from_header: Option<String>,
 
     /// The consumer group id to use, defaults to a v4 uuid
-    #[arg(short, long, default_value = Uuid::new_v4().to_string())]
+    #[arg(short, long, default_value = uuid())]
+    #[serde(default = "uuid")]
     pub group_id: String,
 
     /// Offset to start consuming from:
@@ -50,7 +53,7 @@ pub struct ConsumeArgs {
     /// When -o=s@ is used, it may be followed with another -o=e@ in order to consume messages between two
     /// timestamps.
     #[arg(short, long, require_equals = true, verbatim_doc_comment)]
-    pub offsets: Vec<Offset>,
+    pub offsets: Option<Vec<Offset>>,
 
     /// Exit after consuming this many messages
     #[arg(short, long)]
@@ -58,6 +61,7 @@ pub struct ConsumeArgs {
 
     ///  Exit successfully when last message received
     #[arg(short, long)]
+    #[serde(default)]
     pub exit_on_last: bool,
 
     /// Trim a number of bytes from the start of the payload before attempting to deserialize
@@ -309,10 +313,10 @@ pub fn create_consumer(
 }
 
 pub async fn start_consumer(
-    consumer: &StreamConsumer,
+    consumer: StreamConsumer,
     descriptor_pool: DescriptorPool,
     args: ConsumeArgs,
-) -> anyhow::Result<impl Stream<Item = anyhow::Result<Option<Envelope>>> + '_> {
+) -> anyhow::Result<impl Stream<Item = anyhow::Result<Option<Envelope>>>> {
     let ConsumeArgs {
         topic,
         message_name,
@@ -348,7 +352,7 @@ pub async fn start_consumer(
         l.add_partition_offset(&topic, *p, rdkafka::Offset::Beginning)?;
     }
 
-    let mut offsets = offsets.into_iter();
+    let mut offsets = offsets.unwrap_or(vec![Offset::Beginning]).into_iter();
     let (start_offset, end_offset) = match (offsets.next(), offsets.next(), offsets.next()) {
         (Some(start @ Offset::Start(_)), end @ Some(Offset::Until(_)), None) => (start, end),
         (Some(first), None, None) => (first, None),
@@ -431,10 +435,11 @@ pub async fn start_consumer(
         debug!("Exiting after {count:?} messages");
     };
 
-    let stream = consumer.stream();
+    //let stream = consumer.stream();
 
-    struct State<S> {
-        stream: S, // @TODO replace with generic // MessageStream<'static, DefaultConsumerContext>
+    struct State {
+        consumer: StreamConsumer,
+        //stream: S, // @TODO replace with generic // MessageStream<'static, DefaultConsumerContext>
         processor: ProtoConsumer,
         received: usize,
         count: Option<usize>,
@@ -445,7 +450,7 @@ pub async fn start_consumer(
     }
 
     let state = State {
-        stream,
+        consumer,
         processor,
         received: 0,
         count,
@@ -456,11 +461,11 @@ pub async fn start_consumer(
     };
 
     let s = futures::stream::unfold(state, |mut s| async {
-        let Some(message) = s.stream.next().await else {
-            return None;
-        };
+        //let Some(message) = s.stream.next().await else {
+        //    return None;
+        //};
 
-        match message {
+        match s.consumer.recv().await {
             Ok(m) => {
                 debug!("Got message");
                 let current_offset = m.offset();
@@ -509,6 +514,7 @@ pub async fn start_consumer(
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Offset {
     /// Start consuming from the beginning of the partition.
     Beginning,

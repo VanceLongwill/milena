@@ -5,6 +5,7 @@ use log::{error, info, warn};
 use milena::codec::LinesCodec;
 use milena::decoder::{DecodeArgs, ProtoDecoder};
 use milena::encoder::{EncodeArgs, ProtoEncoder};
+use milena::server::{start_server, ServerArgs, ServerState};
 use prost_reflect::DescriptorPool;
 use rdkafka::config::ClientConfig;
 use std::collections::HashMap;
@@ -59,6 +60,8 @@ enum Command {
     Decode(DecodeArgs),
     /// Encode an arbitrary protobuf message
     Encode(EncodeArgs),
+    /// Start a HTTP server that can proxy kafka/protobuf to http/json
+    Serve(ServerArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -147,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
             let serialized = serialized.sink_map_err(anyhow::Error::from);
 
             let consumer = create_consumer(client_config, &args.group_id, args.exit_on_last)?;
-            let stream = start_consumer(&consumer, descriptor_pool, args).await?;
+            let stream = start_consumer(consumer, descriptor_pool, args).await?;
 
             // not all errors are fatal, log errors and keep forwarding
             let stream = stream.map(|res| match res {
@@ -194,6 +197,32 @@ async fn main() -> anyhow::Result<()> {
             let output = tokio::io::stdout();
             let mut encoder = ProtoEncoder::new(descriptor_pool, output);
             encoder.encode(args).await?;
+        }
+        Command::Serve(args) => {
+            info!("Starting server");
+            let state = ServerState {
+                client_config,
+                descriptor_pool,
+            };
+
+            select! {
+                res = start_server(state, args) => {
+                    match res {
+                        Ok(()) => info!("Server exited successfully"),
+                        Err(err) => error!("Server exited with an error: {err}"),
+                    }
+                },
+                shutdown = signal::ctrl_c() => {
+                    match shutdown {
+                        Ok(()) => {
+                            info!("Received shutdown signal");
+                        }
+                        Err(err) => {
+                            error!("Failed to listen for shutdown signal: {err}");
+                        }
+                    }
+                }
+            }
         }
     }
 
