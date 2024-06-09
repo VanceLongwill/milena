@@ -26,4 +26,5 @@ axum = "0.7.5"
 axum-streams = "0.15.0"
 tokio-stream = { version = "0.1.15" }
 tokio-serde = { version = "0.9.0", features = ["json"] }
-tokio-util = { version = "0.7.11", features = ["codec"] }
+tokio-util = { version = "0.7.11", features = ["codec", "io"] }
+async-stream = "0.3.5"

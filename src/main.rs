@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
-use futures::SinkExt;
-use log::{error, info};
+use futures::{SinkExt, StreamExt};
+use log::{error, info, warn};
 use milena::codec::LinesCodec;
 use milena::decoder::{DecodeArgs, ProtoDecoder};
 use milena::encoder::{EncodeArgs, ProtoEncoder};
@@ -13,9 +13,9 @@ use tokio::fs::{read, read_to_string};
 use tokio::{select, signal};
 
 use tokio_serde::formats::*;
-use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
+use tokio_util::codec::FramedWrite;
 
-use milena::consumer::{start_consumer, ConsumeArgs};
+use milena::consumer::{create_consumer, start_consumer, ConsumeArgs};
 use milena::producer::{ProduceArgs, ProtoProducer};
 
 #[derive(Debug, Default)]
@@ -128,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
             config.0.insert(k, v);
         }
     }
-    let mut client_config = ClientConfig::from(config);
+    let client_config = ClientConfig::from(config);
 
     let mut descriptor_pool = DescriptorPool::new();
     let b = Bytes::from(read(cli.file_descriptors).await?);
@@ -144,9 +144,26 @@ async fn main() -> anyhow::Result<()> {
             let writer = FramedWrite::new(output, codec);
             let serialized =
                 tokio_serde::SymmetricallyFramed::new(writer, SymmetricalJson::default());
+            let serialized = serialized.sink_map_err(anyhow::Error::from);
+
+            let consumer = create_consumer(client_config, &args.group_id, args.exit_on_last)?;
+            let stream = start_consumer(&consumer, descriptor_pool, args).await?;
+
+            // not all errors are fatal, log errors and keep forwarding
+            let stream = stream.map(|res| match res {
+                Ok(Some(msg)) => Ok(Some(msg)),
+                Ok(None) => {
+                    warn!("Empty message received");
+                    Ok(None)
+                }
+                Err(err) => {
+                    error!("Failed to consume message: {err}");
+                    Ok(None)
+                }
+            });
 
             select! {
-                res = start_consumer(&mut client_config, descriptor_pool, args, serialized) => {
+                res = stream.forward(serialized) => {
                     match res {
                         Ok(()) => info!("Consumed exited successfully"),
                         Err(err) => error!("Consumer exited with an error: {err}"),

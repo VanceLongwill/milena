@@ -1,17 +1,18 @@
 use clap::{ArgGroup, Parser};
 use futures::sink::SinkExt;
-use futures::{Sink, StreamExt};
+use futures::{Sink, Stream, StreamExt};
 use log::{debug, info, trace, warn};
 use prost_reflect::{DescriptorPool, DynamicMessage, SerializeOptions};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
-use rdkafka::consumer::{Consumer, DefaultConsumerContext};
+use rdkafka::consumer::{Consumer, DefaultConsumerContext, MessageStream};
 use rdkafka::error::KafkaError;
 use rdkafka::message::{BorrowedMessage, Headers, Message, Timestamp};
 use rdkafka::topic_partition_list::TopicPartitionList;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -24,21 +25,21 @@ use uuid::Uuid;
 pub struct ConsumeArgs {
     /// Name of the topic to consume
     #[arg(short, long)]
-    topic: String,
+    pub topic: String,
 
     /// The protobuf message name itself. Useful when there's only one schema per topic.
     #[arg(short = 'N', long)]
-    message_name: Option<String>,
+    pub message_name: Option<String>,
 
     /// The message name header key that contains the message type as the value to enable dynamic
     /// decoding. Useful when there's more than one message type/schema per topic, but requires
     /// that the protobuf message name is present in the specified header.
     #[arg(short = 'H', long, verbatim_doc_comment)]
-    message_name_from_header: Option<String>,
+    pub message_name_from_header: Option<String>,
 
     /// The consumer group id to use, defaults to a v4 uuid
     #[arg(short, long, default_value = Uuid::new_v4().to_string())]
-    group_id: String,
+    pub group_id: String,
 
     /// Offset to start consuming from:
     ///    beginning (default) | end | stored |
@@ -49,29 +50,29 @@ pub struct ConsumeArgs {
     /// When -o=s@ is used, it may be followed with another -o=e@ in order to consume messages between two
     /// timestamps.
     #[arg(short, long, require_equals = true, verbatim_doc_comment)]
-    offsets: Vec<Offset>,
+    pub offsets: Vec<Offset>,
 
     /// Exit after consuming this many messages
     #[arg(short, long)]
-    count: Option<usize>,
+    pub count: Option<usize>,
 
     ///  Exit successfully when last message received
     #[arg(short, long)]
-    exit_on_last: bool,
+    pub exit_on_last: bool,
 
     /// Trim a number of bytes from the start of the payload before attempting to deserialize
     #[arg(short = 'T', long)]
-    trim_leading_bytes: Option<usize>,
+    pub trim_leading_bytes: Option<usize>,
 
     /// Decode the message key using a protobuf message
-    key_message_name: Option<String>,
+    pub key_message_name: Option<String>,
 
     /// Decode a header value with the given protobuf message in the format `<header-name>=<message-name>`
-    header_message_name: Option<Vec<String>>,
+    pub header_message_name: Option<Vec<String>>,
 
     /// Parition to consume from, can be specified more than once for multiple partitions. Defaults to all partitions.
     #[arg(short = 'p', long)]
-    partition: Option<Vec<i32>>,
+    pub partition: Option<Vec<i32>>,
 }
 
 pub struct Payload(DynamicMessage);
@@ -283,30 +284,12 @@ fn get_absolute_offset(
     }
 }
 
-pub async fn start_consumer<W>(
-    client_config: &mut ClientConfig,
-    descriptor_pool: DescriptorPool,
-    args: ConsumeArgs,
-    mut output: W,
-) -> anyhow::Result<()>
-where
-    W: Sink<Envelope> + std::marker::Unpin,
-    W::Error: Send + Sync,
-    anyhow::Error: From<W::Error>,
-{
-    let ConsumeArgs {
-        topic,
-        message_name,
-        message_name_from_header,
-        group_id,
-        offsets,
-        trim_leading_bytes,
-        key_message_name,
-        header_message_name,
-        partition,
-        count,
-        exit_on_last,
-    } = args;
+pub fn create_consumer(
+    client_config: ClientConfig,
+    group_id: &str,
+    exit_on_last: bool,
+) -> anyhow::Result<StreamConsumer> {
+    let mut client_config = client_config.clone();
     client_config.set("group.id", group_id);
 
     if exit_on_last {
@@ -321,6 +304,27 @@ where
 
     let consumer: StreamConsumer<DefaultConsumerContext> =
         client_config.create_with_context(DefaultConsumerContext)?;
+
+    Ok(consumer)
+}
+
+pub async fn start_consumer(
+    consumer: &StreamConsumer,
+    descriptor_pool: DescriptorPool,
+    args: ConsumeArgs,
+) -> anyhow::Result<impl Stream<Item = anyhow::Result<Option<Envelope>>> + '_> {
+    let ConsumeArgs {
+        topic,
+        message_name,
+        message_name_from_header,
+        offsets,
+        trim_leading_bytes,
+        key_message_name,
+        header_message_name,
+        partition,
+        count,
+        ..
+    } = args;
 
     let partitions: BTreeSet<i32> = if let Some(partition) = partition {
         partition.into_iter().collect()
@@ -411,12 +415,11 @@ where
 
     if let Some(count) = count {
         if count == 0 {
-            info!("Message count is zero, exiting");
-            return Ok(());
+            return Err(anyhow::anyhow!("Message count is zero, exiting")); // @TODO should this be error?
         }
     }
 
-    let mut processor = ProtoConsumer::new(
+    let processor = ProtoConsumer::new(
         descriptor_pool,
         message_name_extraction,
         trim_leading_bytes,
@@ -428,69 +431,85 @@ where
         debug!("Exiting after {count:?} messages");
     };
 
-    let mut stream = consumer.stream();
-    let mut received = 0;
+    let stream = consumer.stream();
 
-    let mut partitions_reached_max = BTreeSet::<i32>::new();
+    struct State<S> {
+        stream: S, // @TODO replace with generic // MessageStream<'static, DefaultConsumerContext>
+        processor: ProtoConsumer,
+        received: usize,
+        count: Option<usize>,
+        max_offsets: Option<HashMap<(String, i32), i64>>,
+        partitions: BTreeSet<i32>,
+        partitions_reached_max: BTreeSet<i32>,
+        exit_on_last: bool,
+    }
 
-    while let Some(message) = stream.next().await {
+    let state = State {
+        stream,
+        processor,
+        received: 0,
+        count,
+        max_offsets,
+        partitions_reached_max: BTreeSet::<i32>::new(),
+        partitions,
+        exit_on_last: args.exit_on_last,
+    };
+
+    let s = futures::stream::unfold(state, |mut s| async {
+        let Some(message) = s.stream.next().await else {
+            return None;
+        };
+
         match message {
-            Err(err) => match err {
-                KafkaError::PartitionEOF(current_partition) if exit_on_last => {
-                    debug!("Reached end of partition {current_partition}");
-                    partitions_reached_max.insert(current_partition);
-                    if partitions_reached_max == partitions {
-                        debug!("Reached end of all partitions, exiting");
-                        return Ok(());
-                    }
-                }
-                _ => {
-                    return Err(err.into());
-                }
-            },
             Ok(m) => {
+                debug!("Got message");
                 let current_offset = m.offset();
                 let current_partition = m.partition();
-                if let Some(max_offset) = max_offsets
+                if let Some(max_offset) = s
+                    .max_offsets
                     .as_ref()
                     .and_then(|offsets| offsets.get(&(m.topic().to_string(), current_partition)))
                 {
                     if current_offset >= *max_offset {
                         debug!("Reached specified maximum offset for partition {current_partition}, exiting");
-                        partitions_reached_max.insert(current_partition);
-                        if partitions_reached_max == partitions {
+                        s.partitions_reached_max.insert(current_partition);
+                        if s.partitions_reached_max == s.partitions {
                             debug!("Reached end of all partitions, exiting");
-                            return Ok(());
+                            return None;
                         }
-                        return Ok(());
                     }
                 }
 
-                received += 1;
-
-                match processor.process_message(m).await {
-                    Ok(Some(message)) => {
-                        output.send(message).await?;
-                        info!("processed message");
-                    }
-                    Ok(None) => warn!("message has no payload"),
-                    Err(e) => warn!("failed to process message: {e}"),
-                };
-
-                if let Some(count) = count {
-                    if received >= count - 1 {
-                        debug!("Exiting after {received} messages processed");
-                        return Ok(());
+                s.received += 1;
+                if let Some(count) = s.count {
+                    if s.received >= count - 1 {
+                        debug!("Exiting after {} messages processed", s.received);
+                        return None;
                     }
                 }
+                Some((s.processor.process_message(m).await, s))
             }
+            Err(err) => match err {
+                KafkaError::PartitionEOF(current_partition) if s.exit_on_last => {
+                    debug!("Reached end of partition {current_partition}");
+                    s.partitions_reached_max.insert(current_partition);
+                    if s.partitions_reached_max == s.partitions {
+                        debug!("Reached end of all partitions, exiting");
+                        None
+                    } else {
+                        Some((Err(err.into()), s))
+                    }
+                }
+                _ => Some((Err(err.into()), s)),
+            },
         }
-    }
-    Ok(())
+    });
+
+    Ok(s)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum Offset {
+pub enum Offset {
     /// Start consuming from the beginning of the partition.
     Beginning,
     /// Start consuming from the end of the partition.

@@ -1,4 +1,7 @@
-use crate::consumer::{start_consumer, ConsumeArgs};
+use crate::{
+    codec::LinesCodec,
+    consumer::{start_consumer, ConsumeArgs},
+};
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -7,6 +10,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use futures::stream::StreamExt;
 use log::{error, info};
 use prost_reflect::DescriptorPool;
 use rdkafka::ClientConfig;
@@ -14,6 +18,8 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     select, signal,
 };
+use tokio_serde::formats::SymmetricalJson;
+use tokio_util::codec::FramedWrite;
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -39,14 +45,17 @@ async fn handler(
 ) -> impl IntoResponse {
     let output = tokio::io::sink();
     let mut client_config = state.client_config.clone();
-    let mut output_stream = vec![];
+    let codec = LinesCodec::from(tokio_util::codec::LinesCodec::new());
+    let writer = FramedWrite::new(output, codec);
+    let rdr = tokio_util::io::ReaderStream::new(output);
+    let serialized = tokio_serde::SymmetricallyFramed::new(writer, SymmetricalJson::default());
     tokio::spawn(async move {
         select! {
             res = start_consumer(
                 &mut client_config,
                 state.descriptor_pool,
                 args,
-                output_stream,
+                serialized,
             ) => {
                 match res {
                     Ok(()) => info!("Consumed exited successfully"),
@@ -66,5 +75,5 @@ async fn handler(
         }
     });
 
-    StatusCode::OK
+    Body::from(output)
 }
