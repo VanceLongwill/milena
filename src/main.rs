@@ -8,7 +8,7 @@ use rdkafka::config::ClientConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs::{read, read_to_string};
-use tokio::signal;
+use tokio::{select, signal};
 
 use milena::consumer::{start_consumer, ConsumeArgs};
 use milena::producer::{ProduceArgs, ProtoProducer};
@@ -74,13 +74,42 @@ struct Cli {
     ///
     #[arg(short = 'X', long, global = true)]
     rdkafka_options: Option<Vec<String>>,
+
+    /// Enable verbose logging, can be repeated for more verbosity up to 5 times
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    let mut builder = env_logger::builder();
+    builder.parse_default_env();
 
     let cli = Cli::parse();
+
+    match cli.verbose {
+        0 => {
+            // suppress all librdkafka logs as default
+            builder.filter_module("rdkafka::client", log::LevelFilter::Off);
+        }
+        1 => {
+            builder.filter_level(log::LevelFilter::Error);
+        }
+        2 => {
+            builder.filter_level(log::LevelFilter::Warn);
+        }
+        3 => {
+            builder.filter_level(log::LevelFilter::Info);
+        }
+        4 => {
+            builder.filter_level(log::LevelFilter::Debug);
+        }
+        5.. => {
+            builder.filter_level(log::LevelFilter::Trace);
+        }
+    }
+
+    builder.init();
 
     let mut config = if let Some(config) = cli.config {
         KafkaConfig::from_file(config).await?
@@ -94,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
             config.0.insert(k, v);
         }
     }
-    let client_config = ClientConfig::from(config);
+    let mut client_config = ClientConfig::from(config);
 
     let mut descriptor_pool = DescriptorPool::new();
     let b = Bytes::from(read(cli.file_descriptors).await?);
@@ -104,15 +133,24 @@ async fn main() -> anyhow::Result<()> {
         Command::Consume(args) => {
             tokio::spawn(async move {
                 info!("Starting consumer");
-                start_consumer(&mut client_config.clone(), descriptor_pool, args).await
             });
 
-            match signal::ctrl_c().await {
-                Ok(()) => {
-                    info!("Received shutdown signal");
-                }
-                Err(err) => {
-                    error!("Failed to listen for shutdown signal: {err}");
+            select! {
+                res = start_consumer(&mut client_config, descriptor_pool, args) => {
+                    match res {
+                        Ok(()) => info!("Consumed exited successfully"),
+                        Err(err) => error!("Consumer exited with an error: {err}"),
+                    }
+                },
+                shutdown = signal::ctrl_c() => {
+                    match shutdown {
+                        Ok(()) => {
+                            info!("Received shutdown signal");
+                        }
+                        Err(err) => {
+                            error!("Failed to listen for shutdown signal: {err}");
+                        }
+                    }
                 }
             }
         }
