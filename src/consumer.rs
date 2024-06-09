@@ -93,6 +93,7 @@ impl Serialize for Payload {
 
 /// Envelope represents a kafka message along with its relevant metadata
 #[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Envelope {
     headers: Option<HashMap<String, Value>>,
     payload: Payload,
@@ -104,6 +105,7 @@ pub struct Envelope {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum Value {
     Plaintext(String),
     Protobuf(DynamicMessage),
