@@ -1,8 +1,11 @@
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
-use log::{error, info};
+use futures::{SinkExt, StreamExt};
+use log::{error, info, warn};
+use milena::codec::LinesCodec;
 use milena::decoder::{DecodeArgs, ProtoDecoder};
 use milena::encoder::{EncodeArgs, ProtoEncoder};
+use milena::server::{start_server, ServerArgs, ServerState};
 use prost_reflect::DescriptorPool;
 use rdkafka::config::ClientConfig;
 use std::collections::HashMap;
@@ -10,7 +13,10 @@ use std::path::PathBuf;
 use tokio::fs::{read, read_to_string};
 use tokio::{select, signal};
 
-use milena::consumer::{start_consumer, ConsumeArgs};
+use tokio_serde::formats::*;
+use tokio_util::codec::FramedWrite;
+
+use milena::consumer::{create_consumer, start_consumer, ConsumeArgs};
 use milena::producer::{ProduceArgs, ProtoProducer};
 
 #[derive(Debug, Default)]
@@ -54,6 +60,8 @@ enum Command {
     Decode(DecodeArgs),
     /// Encode an arbitrary protobuf message
     Encode(EncodeArgs),
+    /// Start a HTTP server that can proxy kafka/protobuf to http/json
+    Serve(ServerArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -123,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
             config.0.insert(k, v);
         }
     }
-    let mut client_config = ClientConfig::from(config);
+    let client_config = ClientConfig::from(config);
 
     let mut descriptor_pool = DescriptorPool::new();
     let b = Bytes::from(read(cli.file_descriptors).await?);
@@ -131,12 +139,34 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Consume(args) => {
-            tokio::spawn(async move {
-                info!("Starting consumer");
+            info!("Starting consumer");
+
+            let output = tokio::io::stdout();
+
+            let codec = LinesCodec::from(tokio_util::codec::LinesCodec::new());
+            let writer = FramedWrite::new(output, codec);
+            let serialized =
+                tokio_serde::SymmetricallyFramed::new(writer, SymmetricalJson::default());
+            let serialized = serialized.sink_map_err(anyhow::Error::from);
+
+            let consumer = create_consumer(client_config, &args.group_id, args.exit_on_last)?;
+            let stream = start_consumer(consumer, descriptor_pool, args).await?;
+
+            // not all errors are fatal, log errors and keep forwarding
+            let stream = stream.map(|res| match res {
+                Ok(Some(msg)) => Ok(Some(msg)),
+                Ok(None) => {
+                    warn!("Empty message received");
+                    Ok(None)
+                }
+                Err(err) => {
+                    error!("Failed to consume message: {err}");
+                    Ok(None)
+                }
             });
 
             select! {
-                res = start_consumer(&mut client_config, descriptor_pool, args) => {
+                res = stream.forward(serialized) => {
                     match res {
                         Ok(()) => info!("Consumed exited successfully"),
                         Err(err) => error!("Consumer exited with an error: {err}"),
@@ -167,6 +197,32 @@ async fn main() -> anyhow::Result<()> {
             let output = tokio::io::stdout();
             let mut encoder = ProtoEncoder::new(descriptor_pool, output);
             encoder.encode(args).await?;
+        }
+        Command::Serve(args) => {
+            info!("Starting server");
+            let state = ServerState {
+                client_config,
+                descriptor_pool,
+            };
+
+            select! {
+                res = start_server(state, args) => {
+                    match res {
+                        Ok(()) => info!("Server exited successfully"),
+                        Err(err) => error!("Server exited with an error: {err}"),
+                    }
+                },
+                shutdown = signal::ctrl_c() => {
+                    match shutdown {
+                        Ok(()) => {
+                            info!("Received shutdown signal");
+                        }
+                        Err(err) => {
+                            error!("Failed to listen for shutdown signal: {err}");
+                        }
+                    }
+                }
+            }
         }
     }
 
