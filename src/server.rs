@@ -1,12 +1,12 @@
-use crate::consumer::{create_consumer, start_consumer, ConsumeArgs};
+use crate::consumer::{create_consumer, start_consumer, ConsumeArgs, Envelope};
 use axum::{extract::State, response::IntoResponse, routing::any, Json, Router};
 use axum_streams::*;
 use clap::Parser;
-use futures::stream::StreamExt;
 use log::{error, warn};
 use prost_reflect::DescriptorPool;
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
 #[derive(Parser, Debug, Serialize, Deserialize)]
 pub struct ServerArgs {
@@ -59,10 +59,37 @@ impl IntoResponse for ErrorResponse {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct ConsumeRequest {
+    #[serde(flatten)]
+    args: ConsumeArgs,
+
+    #[serde(default)]
+    hide_errors: bool,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum MaybeMessage {
+    Message(Envelope),
+    Error(ErrorResponse),
+}
+
+impl From<anyhow::Result<Envelope>> for MaybeMessage {
+    fn from(value: anyhow::Result<Envelope>) -> Self {
+        match value {
+            Ok(envelope) => MaybeMessage::Message(envelope),
+            Err(err) => MaybeMessage::Error(err.into()),
+        }
+    }
+}
+
 async fn handler(
     State(state): State<ServerState>,
-    Json(args): Json<ConsumeArgs>,
+    Json(req): Json<ConsumeRequest>,
 ) -> axum::response::Result<impl IntoResponse> {
+    let args = req.args;
+    let hide_errors = req.hide_errors;
     let client_config = state.client_config.clone();
     let consumer = create_consumer(client_config, &args.group_id, args.exit_on_last)
         .map_err(ErrorResponse::from)?;
@@ -72,17 +99,29 @@ async fn handler(
 
     // not all errors are fatal, log errors and keep forwarding messages until the stream is
     // exhausted
-    let stream = stream.map(|res| match res {
-        Ok(Some(msg)) => Some(msg),
-        Ok(None) => {
-            warn!("Empty message received");
-            None
-        }
-        Err(err) => {
-            error!("Failed to consume message: {err}");
-            None
-        }
-    });
+    let stream = stream
+        .filter_map(|res| match res {
+            Ok(Some(msg)) => Some(Ok(msg)),
+            Ok(None) => {
+                warn!("Empty message received");
+                None
+            }
+            Err(err) => {
+                error!("Failed to consume message: {err}");
+                Some(Err(err))
+            }
+        })
+        .map(MaybeMessage::from)
+        .filter_map(move |maybe| {
+            if !hide_errors {
+                return Some(maybe);
+            }
+            if let MaybeMessage::Error(..) = maybe {
+                None
+            } else {
+                Some(maybe)
+            }
+        });
 
     Ok(StreamBodyAs::json_nl(stream))
 }
