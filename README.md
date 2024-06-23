@@ -16,7 +16,29 @@ for producing & consuming protobuf encoded messages over Kafka.
 
 ![milena screencast](./milena-screencast.gif)
 
-### Usage
+## Installation
+
+### Prebuilt binaries
+
+- Download the latest release archive for your platform from [the latest release](https://github.com/VanceLongwill/milena/releases/latest)
+- Extract the archive
+- If you're on MacOS, remove the binary from quarantine
+
+### Compile from source with cargo
+
+```sh
+cargo install --git https://github.com/VanceLongwill/milena
+```
+
+### Docker image
+
+Based on the [prebuilt binaries](#prebuild-binaries) on top of the Debian Bookworm slim image (linux/amd64).
+
+```sh
+docker pull vancelongwill/milena:latest
+```
+
+## Usage
 
 ```sh
 Usage: milena [OPTIONS] <COMMAND>
@@ -206,25 +228,12 @@ milena encode -N example.v1.UserUpdated '{"name": "alice", "age": 90}' |\
 {"name":"alice","age":90}%
 ```
 
-## Installation
-
-### Prebuilt binaries
-
-- Download the latest release archive for your platform from [the releases page](https://github.com/VanceLongwill/milena/releases)
-- Extract the archive
-- If you're on MacOS, remove the binary from quarantine
-
-### With cargo
-
-```sh
-cargo install --git https://github.com/VanceLongwill/milena
-```
-
 ### Troubleshooting
 
 #### Extended logging
 
-Set `RUST_LOG="info,librdkafka=trace,rdkafka::client=debug"`
+Set the verbose flag up to 5 times `-vvvvv` to get increasingly more
+detailed logging.
 
 #### CMake can't find openssl/libsasl2
 
