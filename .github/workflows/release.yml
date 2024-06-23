@@ -48,7 +48,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
-      needs: upload-assets
       runs-on: ubuntu-latest
       steps:
         - name: Set up QEMU
@@ -69,5 +68,3 @@ jobs:
             platforms: linux/amd64 #,linux/arm64
             push: true
             tags: vancelongwill/milena:${{ github.ref_name }},vancelongwill/milena:latest 
-            build-args: |
-              MILENA_VERSION=${{ github.ref_name }}
