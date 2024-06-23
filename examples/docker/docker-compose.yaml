@@ -38,11 +38,9 @@ services:
       - zoo1
 
   milena-proxy:
+    build: ../..
     image: vancelongwill/milena:latest
-    command: >
-      serve -p 29999 \
-        -X bootstrap.servers=kafka1:9092 \
-        -f /app/descriptors.binpb
+    command: "serve -vvvvv -p 29999 -X bootstrap.servers=kafka1:19092 -f /app/descriptors.binpb"
     volumes:
       - "./descriptors.binpb:/app/descriptors.binpb"
     ports: 
