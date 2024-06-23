@@ -1,7 +1,9 @@
-ARG MILENA_VERSION
+FROM --platform=linux/amd64 rust:1.79-bookworm as builder
+WORKDIR /app
+COPY Cargo.* ./
+COPY src ./src
+RUN cargo install --path .
+
 FROM --platform=linux/amd64 debian:bookworm-slim
-WORKDIR /tmp
-ADD https://github.com/VanceLongwill/milena/releases/download/$MILENA_VERSION/milena-x86_64-unknown-linux-gnu.tar.gz milena
-RUN tar xvfz milena -C /usr/local/bin/
-RUN rm -rf /tmp/milena
+COPY --from=builder /usr/local/cargo/bin/milena /usr/local/bin/milena
 ENTRYPOINT ["milena"]
