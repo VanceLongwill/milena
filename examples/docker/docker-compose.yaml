@@ -36,3 +36,13 @@ services:
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "true"
     depends_on:
       - zoo1
+
+  milena-proxy:
+    build: ../..
+    image: vancelongwill/milena:latest
+    command: "serve -vvvvv -p 29999 -X bootstrap.servers=kafka1:19092 -f /app/descriptors.binpb"
+    volumes:
+      - "./descriptors.binpb:/app/descriptors.binpb"
+    ports: 
+      - "29999:29999"
+
