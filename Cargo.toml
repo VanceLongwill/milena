@@ -22,7 +22,7 @@ bytes = "1.5.0"
 uuid = { version = "1.5.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
 openssl = { version = "0.10", features = ["vendored"] }
 futures = "0.3.30"
-axum = "0.7.5"
+axum = { version = "0.7.5", features = ["http2"] }
 axum-streams = { version = "0.15.0", features = ["json", "text"] }
 tokio-stream = { version = "0.1.15" }
 tokio-serde = { version = "0.9.0", features = ["json"] }
