@@ -1,17 +1,20 @@
 use clap::{ArgGroup, Parser};
+use displaydoc::Display;
 use futures::Stream;
 use log::{debug, info, trace, warn};
+use prost::DecodeError;
 use prost_reflect::{DescriptorPool, DynamicMessage, SerializeOptions};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext};
 use rdkafka::error::KafkaError;
-use rdkafka::message::{BorrowedMessage, Headers, Message, Timestamp};
+use rdkafka::message::{BorrowedHeaders, BorrowedMessage, Header, Headers, Message, Timestamp};
 use rdkafka::topic_partition_list::TopicPartitionList;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{BTreeSet, HashMap};
-use std::fmt::Display;
+use std::string::FromUtf8Error;
 use std::time::Duration;
+use thiserror::Error;
 use uuid::Uuid;
 
 fn uuid() -> String {
@@ -69,9 +72,11 @@ pub struct ConsumeArgs {
     pub trim_leading_bytes: Option<usize>,
 
     /// Decode the message key using a protobuf message
+    #[arg(long)]
     pub key_message_name: Option<String>,
 
     /// Decode a header value with the given protobuf message in the format `<header-name>=<message-name>`
+    #[arg(long)]
     pub header_message_name: Option<Vec<String>>,
 
     /// Parition to consume from, can be specified more than once for multiple partitions. Defaults to all partitions.
@@ -79,6 +84,7 @@ pub struct ConsumeArgs {
     pub partition: Option<Vec<i32>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Payload(DynamicMessage);
 
 impl Serialize for Payload {
@@ -92,11 +98,11 @@ impl Serialize for Payload {
 }
 
 /// Envelope represents a kafka message along with its relevant metadata
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Envelope {
-    headers: Option<HashMap<String, Value>>,
-    payload: Payload,
+    headers: Option<HashMap<String, Option<Value>>>,
+    payload: Option<Payload>,
     offset: i64,
     timestamp: Option<i64>,
     key: Option<Value>,
@@ -111,7 +117,7 @@ pub enum Value {
     Protobuf(DynamicMessage),
 }
 
-impl Display for Value {
+impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Plaintext(s) => s.fmt(f),
@@ -132,6 +138,44 @@ fn trim_bytes(x: usize, b: &[u8]) -> &[u8] {
     &b[x..]
 }
 
+#[derive(Debug, Serialize)]
+pub struct MessageError {
+    #[serde(serialize_with = "serialize_error")]
+    pub error: Error,
+    pub message: Envelope,
+}
+
+fn serialize_error<S>(error: &Error, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&error.to_string())
+}
+
+#[derive(Debug, Display, Error)]
+pub enum Error {
+    /// Failed to decode proto message payload: {0}
+    DecodeProtoPayload(DecodeError),
+    /// Failed to decode proto message header: {0}
+    DecodeProtoHeader(DecodeError),
+    /// Failed to decode proto message key: {0}
+    DecodeProtoKey(DecodeError),
+    /// Failed to decode utf-8 message header: {0}
+    DecodeUTF8Header(FromUtf8Error),
+    /// Missing headers required for decoding payload by header key
+    MissingHeaders,
+    /// Missing header: {0}
+    MissingHeader(String),
+    /// Header key has no value: {0}
+    MissingHeaderValue(String),
+    /// Payload message name not found in descriptor pool: {0}
+    PayloadMessageNameNotFound(String),
+    /// Key message name not found in descriptor pool: {0}
+    KeyMessageNameNotFound(String),
+    /// Header message name not found in descriptor pool: {0}
+    HeaderMessageNameNotFound(String),
+}
+
 impl ProtoConsumer {
     pub fn new(
         pool: DescriptorPool,
@@ -149,118 +193,133 @@ impl ProtoConsumer {
         }
     }
 
+    fn decode_header_kv(&self, header: Header<&[u8]>) -> Result<(String, Option<Value>), Error> {
+        let k = header.key;
+
+        let message_name = self
+            .header_message_names
+            .as_ref()
+            .and_then(|names| names.get(k));
+
+        match (header.value, message_name) {
+            (Some(v), Some(message_name)) => {
+                let message_descriptor = self
+                    .pool
+                    .get_message_by_name(message_name)
+                    .ok_or(Error::HeaderMessageNameNotFound(message_name.to_string()))?;
+                let dynamic_message = DynamicMessage::decode(message_descriptor, v)
+                    .map_err(Error::DecodeProtoHeader)?;
+                Ok((k.to_string(), Some(Value::Protobuf(dynamic_message))))
+            }
+            (Some(v), None) => match String::from_utf8(v.to_vec()) {
+                Ok(value) => Ok((k.to_string(), Some(Value::Plaintext(value)))),
+                Err(err) => Err(Error::DecodeUTF8Header(err)),
+            },
+            _ => Ok((k.to_string(), None)),
+        }
+    }
+
+    fn get_headers(&self, borrowed_headers: &BorrowedHeaders) -> HashMap<String, Option<Value>> {
+        let mut headers = HashMap::with_capacity(borrowed_headers.count());
+        for header in borrowed_headers.iter() {
+            match self.decode_header_kv(header) {
+                Ok((k, v)) => {
+                    headers.insert(k, v);
+                }
+                Err(err) => {
+                    warn!("Failed to decode header: {err}");
+                }
+            };
+        }
+        headers
+    }
+
+    fn decode_payload(
+        &self,
+        b: &[u8],
+        maybe_headers: &Option<HashMap<String, Option<Value>>>,
+    ) -> Result<DynamicMessage, Error> {
+        let trimmed = if let Some(trim_leading_bytes) = self.trim_leading_bytes {
+            trim_bytes(trim_leading_bytes, b)
+        } else {
+            b
+        };
+
+        let message_name = match &self.message_name_extractor {
+            MessageName::Name(name) => name.to_string(),
+            MessageName::HeaderKey(message_name_header) => {
+                let headers = maybe_headers.as_ref().ok_or(Error::MissingHeaders)?;
+
+                headers
+                    .get(message_name_header)
+                    .ok_or(Error::MissingHeader(message_name_header.to_string()))?
+                    .as_ref()
+                    .map(|k| k.to_string())
+                    .ok_or(Error::MissingHeaderValue(message_name_header.to_string()))?
+            }
+        };
+
+        let message_descriptor = self
+            .pool
+            .get_message_by_name(&message_name)
+            .ok_or(Error::PayloadMessageNameNotFound(message_name))?;
+
+        DynamicMessage::decode(message_descriptor, trimmed).map_err(Error::DecodeProtoPayload)
+    }
+
     pub async fn process_message(
         &mut self,
         m: BorrowedMessage<'_>,
-    ) -> anyhow::Result<Option<Envelope>> {
-        if let Some(b) = m.payload() {
-            let trimmed = if let Some(trim_leading_bytes) = self.trim_leading_bytes {
-                trim_bytes(trim_leading_bytes, b)
-            } else {
-                b
-            };
+    ) -> Result<Option<Envelope>, Error> {
+        let maybe_headers = m.headers().map(|b| self.get_headers(b));
 
-            let maybe_headers = if let Some(b) = m.headers() {
-                let mut headers = HashMap::new();
-                for header in b.iter() {
-                    let k = header.key;
-
-                    if let Some(v) = header.value {
-                        if let Some(header_message_names) = &self.header_message_names {
-                            if let Some(message_name) = header_message_names.get(k) {
-                                let message_descriptor = self
-                                    .pool
-                                    .get_message_by_name(message_name)
-                                    .ok_or(anyhow::anyhow!(
-                                        "cannot find header message in descriptors: {message_name}"
-                                    ))?;
-                                let dynamic_message =
-                                    DynamicMessage::decode(message_descriptor, v)?;
-                                headers.insert(k.to_string(), Value::Protobuf(dynamic_message));
-                            }
-                        };
-
-                        match String::from_utf8(v.into()) {
-                            Ok(value) => {
-                                headers.insert(k.to_string(), Value::Plaintext(value));
-                            }
-                            Err(err) => {
-                                warn!("failed to decode header: {err}");
-                            }
-                        };
-                    } else {
-                        headers.insert(k.to_string(), Value::Plaintext(String::default()));
-                    }
+        let payload = if let Some(b) = m.payload() {
+            match self.decode_payload(b, &maybe_headers) {
+                Ok(msg) => Some(Payload(msg)),
+                Err(err) => {
+                    warn!("Failed to decode message payload: {err}");
+                    None
                 }
-                Some(headers)
-            } else {
-                None
-            };
-
-            let message_name = match &self.message_name_extractor {
-                MessageName::Name(name) => name.to_owned(),
-                MessageName::HeaderKey(message_name_header) => {
-                    let headers = maybe_headers.clone().ok_or(anyhow::anyhow!(
-                        "missing headers, required for protobuf deserialization"
-                    ))?;
-                    headers
-                        .get(message_name_header)
-                        .ok_or(anyhow::anyhow!("missing '{message_name_header}' header"))?
-                        .to_string()
-                }
-            };
-
-            let message_descriptor = self
-                .pool
-                .get_message_by_name(&message_name)
-                .ok_or(anyhow::anyhow!("unknown message type: '{message_name}'"))?;
-
-            let dynamic_message = DynamicMessage::decode(message_descriptor, trimmed)?;
-
-            let key = if let Some(key_data) = m.key() {
-                if let Some(key_message_name) = &self.key_message_name {
-                    let message_descriptor = self
-                        .pool
-                        .get_message_by_name(key_message_name)
-                        .ok_or(anyhow::anyhow!(
-                            "cannot find header message in descriptors: {message_name}"
-                        ))?;
-                    let dynamic_message = DynamicMessage::decode(message_descriptor, key_data)?;
-                    Some(Value::Protobuf(dynamic_message))
-                } else {
-                    match String::from_utf8(Vec::from(key_data)) {
-                        Ok(k) => Some(Value::Plaintext(k)),
-                        Err(err) => {
-                            warn!("failed to parse message key: {err}");
-                            None
-                        }
-                    }
-                }
-            } else {
-                None
-            };
-
-            let offset = m.offset();
-            let timestamp = match m.timestamp() {
-                Timestamp::NotAvailable => None,
-                Timestamp::CreateTime(t) => Some(t),
-                Timestamp::LogAppendTime(t) => Some(t),
-            };
-            let partition = m.partition();
-            let topic = m.topic().to_string();
-
-            Ok(Some(Envelope {
-                headers: maybe_headers,
-                offset,
-                timestamp,
-                key,
-                partition,
-                topic,
-                payload: Payload(dynamic_message),
-            }))
+            }
         } else {
-            Ok(None)
-        }
+            None
+        };
+
+        let key = match (m.key(), &self.key_message_name) {
+            (Some(key_data), Some(key_message_name)) => {
+                let message_descriptor = self
+                    .pool
+                    .get_message_by_name(key_message_name)
+                    .ok_or(Error::KeyMessageNameNotFound(key_message_name.to_string()))?;
+                let dynamic_message = DynamicMessage::decode(message_descriptor, key_data)
+                    .map_err(Error::DecodeProtoKey)?;
+                Some(Value::Protobuf(dynamic_message))
+            }
+            (Some(key_data), None) => match String::from_utf8(Vec::from(key_data)) {
+                Ok(k) => Some(Value::Plaintext(k)),
+                Err(err) => {
+                    warn!("Failed to parse message key as utf-8 string: {err}");
+                    None
+                }
+            },
+            _ => None,
+        };
+
+        let timestamp = match m.timestamp() {
+            Timestamp::NotAvailable => None,
+            Timestamp::CreateTime(t) => Some(t),
+            Timestamp::LogAppendTime(t) => Some(t),
+        };
+
+        Ok(Some(Envelope {
+            headers: maybe_headers,
+            offset: m.offset(),
+            timestamp,
+            key,
+            partition: m.partition(),
+            topic: m.topic().to_string(),
+            payload,
+        }))
     }
 }
 
@@ -312,6 +371,17 @@ pub fn create_consumer(
         client_config.create_with_context(DefaultConsumerContext)?;
 
     Ok(consumer)
+}
+
+struct State {
+    consumer: StreamConsumer,
+    processor: ProtoConsumer,
+    received: usize,
+    count: Option<usize>,
+    max_offsets: Option<HashMap<(String, i32), i64>>,
+    partitions: BTreeSet<i32>,
+    partitions_reached_max: BTreeSet<i32>,
+    exit_on_last: bool,
 }
 
 pub async fn start_consumer(
@@ -437,20 +507,6 @@ pub async fn start_consumer(
         debug!("Exiting after {count:?} messages");
     };
 
-    //let stream = consumer.stream();
-
-    struct State {
-        consumer: StreamConsumer,
-        //stream: S, // @TODO replace with generic // MessageStream<'static, DefaultConsumerContext>
-        processor: ProtoConsumer,
-        received: usize,
-        count: Option<usize>,
-        max_offsets: Option<HashMap<(String, i32), i64>>,
-        partitions: BTreeSet<i32>,
-        partitions_reached_max: BTreeSet<i32>,
-        exit_on_last: bool,
-    }
-
     let state = State {
         consumer,
         processor,
@@ -463,10 +519,6 @@ pub async fn start_consumer(
     };
 
     let s = futures::stream::unfold(state, |mut s| async {
-        //let Some(message) = s.stream.next().await else {
-        //    return None;
-        //};
-
         match s.consumer.recv().await {
             Ok(m) => {
                 debug!("Got message");
@@ -494,7 +546,13 @@ pub async fn start_consumer(
                         return None;
                     }
                 }
-                Some((s.processor.process_message(m).await, s))
+                Some((
+                    s.processor
+                        .process_message(m)
+                        .await
+                        .map_err(anyhow::Error::from), // @TODO
+                    s,
+                ))
             }
             Err(err) => match err {
                 KafkaError::PartitionEOF(current_partition) if s.exit_on_last => {
@@ -553,7 +611,7 @@ impl From<&str> for Offset {
     }
 }
 
-impl Display for Offset {
+impl std::fmt::Display for Offset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Offset::Beginning => f.write_str("beginning"),
