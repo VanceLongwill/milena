@@ -11,6 +11,7 @@ use rdkafka::topic_partition_list::TopicPartitionList;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Display;
+use std::str::FromStr;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -77,17 +78,53 @@ pub struct ConsumeArgs {
     /// Parition to consume from, can be specified more than once for multiple partitions. Defaults to all partitions.
     #[arg(short = 'p', long)]
     pub partition: Option<Vec<i32>>,
+
+    /// Case to use when printing JSON keys
+    #[arg(long)]
+    pub case: Case,
+
+    /// Output enums as the assigned number instead of their stringified name
+    #[arg(long)]
+    pub use_enum_numbers: bool,
+
+    /// Omit fields which have their default values
+    #[arg(long)]
+    pub skip_default_fields: bool,
 }
 
-pub struct Payload(DynamicMessage);
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Case {
+    LowerCamelCase,
+    SnakeCase,
+}
+
+impl FromStr for Case {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "lowerCamelCase" => Ok(Self::LowerCamelCase),
+            "snake_case" => Ok(Self::SnakeCase),
+            case => Err(anyhow::anyhow!(
+                "Invalid case option '{}'. Supported: 'lowerCamelCase' | 'snake_case'",
+                case
+            )),
+        }
+    }
+}
+
+pub struct Payload {
+    serialize_options: SerializeOptions,
+    message: DynamicMessage,
+}
 
 impl Serialize for Payload {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let options = SerializeOptions::new().skip_default_fields(false);
-        self.0.serialize_with_options(serializer, &options)
+        self.message
+            .serialize_with_options(serializer, &self.serialize_options)
     }
 }
 
@@ -126,6 +163,7 @@ pub struct ProtoConsumer {
     trim_leading_bytes: Option<usize>,
     header_message_names: Option<HashMap<String, String>>,
     key_message_name: Option<String>,
+    serialize_options: SerializeOptions,
 }
 
 fn trim_bytes(x: usize, b: &[u8]) -> &[u8] {
@@ -139,6 +177,7 @@ impl ProtoConsumer {
         trim_leading_bytes: Option<usize>,
         key_message_name: Option<String>,
         header_message_names: Option<HashMap<String, String>>,
+        serialize_options: SerializeOptions,
     ) -> Self {
         Self {
             pool,
@@ -146,6 +185,7 @@ impl ProtoConsumer {
             trim_leading_bytes,
             key_message_name,
             header_message_names,
+            serialize_options,
         }
     }
 
@@ -256,7 +296,10 @@ impl ProtoConsumer {
                 key,
                 partition,
                 topic,
-                payload: Payload(dynamic_message),
+                payload: Payload {
+                    message: dynamic_message,
+                    serialize_options: self.serialize_options.clone(), // @TODO: use reference instead
+                },
             }))
         } else {
             Ok(None)
@@ -314,7 +357,7 @@ pub fn create_consumer(
     Ok(consumer)
 }
 
-pub async fn start_consumer(
+pub async fn start_consumer<'a>(
     consumer: StreamConsumer,
     descriptor_pool: DescriptorPool,
     args: ConsumeArgs,
@@ -329,6 +372,9 @@ pub async fn start_consumer(
         header_message_name,
         partition,
         count,
+        case,
+        use_enum_numbers,
+        skip_default_fields,
         ..
     } = args;
 
@@ -425,12 +471,21 @@ pub async fn start_consumer(
         }
     }
 
+    let serialize_options = SerializeOptions::new()
+        .skip_default_fields(skip_default_fields)
+        .use_enum_numbers(use_enum_numbers)
+        .use_proto_field_name(match case {
+            Case::LowerCamelCase => false,
+            Case::SnakeCase => true,
+        });
+
     let processor = ProtoConsumer::new(
         descriptor_pool,
         message_name_extraction,
         trim_leading_bytes,
         key_message_name,
         headers_messages,
+        serialize_options,
     );
 
     if let Some(count) = count {
