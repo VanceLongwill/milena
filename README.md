@@ -61,12 +61,15 @@ Options:
           The path to the protobuf file descriptors [default: ./descriptors.binpb]
   -X, --rdkafka-options <RDKAFKA_OPTIONS>
           A catchall for specifying additional librdkafka options
+  -b, --brokers <BROKERS>
+          Bootstrap brokers, comma separated (i.e. equivalent to `-X bootstrap.servers=serv1:port1,serv2:port2`)
   -v, --verbose...
           Enable verbose logging, can be repeated for more verbosity up to 5 times
   -h, --help
           Print help
   -V, --version
           Print version
+
 ```
 
 ## Examples
@@ -77,7 +80,7 @@ Based on the [docker example](./examples/docker).
 
 ```sh
 milena produce \
-  -X bootstrap.servers=localhost:9092 \
+  -b localhost:9092 \
   --topic sometopic \
   --file-descriptors descriptors.binpb \
   --message-name example.v1.UserUpdated \
@@ -90,7 +93,7 @@ milena produce \
 
 ```sh
 milena consume \
-  -X bootstrap.servers=localhost:9092 \
+  -b localhost:9092 \
   -t sometopic \
   -f descriptors.binpb \
   -H "message-name" \
@@ -112,7 +115,7 @@ This provides a number of advantages:
 
 ```sh
 milena serve -p 29999 \
-	-X bootstrap.servers=localhost:9092 \
+	-b localhost:9092 \
 	-f descriptors.binpb
 ```
 
