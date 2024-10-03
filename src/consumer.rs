@@ -80,7 +80,8 @@ pub struct ConsumeArgs {
     pub partition: Option<Vec<i32>>,
 
     /// Case to use when printing JSON keys
-    #[arg(long)]
+    #[arg(long, default_value = "snake_case")]
+    #[serde(default = "default_case")]
     pub case: Case,
 
     /// Output enums as the assigned number instead of their stringified name
@@ -96,6 +97,10 @@ pub struct ConsumeArgs {
 pub enum Case {
     LowerCamelCase,
     SnakeCase,
+}
+
+fn default_case() -> Case {
+    Case::SnakeCase
 }
 
 impl FromStr for Case {
@@ -465,12 +470,6 @@ pub async fn start_consumer<'a>(
                 .collect::<anyhow::Result<HashMap<_, _>>>()
     }).transpose()?;
 
-    if let Some(count) = count {
-        if count == 0 {
-            return Err(anyhow::anyhow!("Message count is zero, exiting")); // @TODO should this be error?
-        }
-    }
-
     let serialize_options = SerializeOptions::new()
         .skip_default_fields(skip_default_fields)
         .use_enum_numbers(use_enum_numbers)
@@ -492,11 +491,8 @@ pub async fn start_consumer<'a>(
         debug!("Exiting after {count:?} messages");
     };
 
-    //let stream = consumer.stream();
-
     struct State {
         consumer: StreamConsumer,
-        //stream: S, // @TODO replace with generic // MessageStream<'static, DefaultConsumerContext>
         processor: ProtoConsumer,
         received: usize,
         count: Option<usize>,
@@ -518,10 +514,12 @@ pub async fn start_consumer<'a>(
     };
 
     let s = futures::stream::unfold(state, |mut s| async {
-        //let Some(message) = s.stream.next().await else {
-        //    return None;
-        //};
-
+        if let Some(count) = s.count {
+            if s.received >= count {
+                debug!("Exiting after {} messages processed", s.received);
+                return None;
+            }
+        }
         match s.consumer.recv().await {
             Ok(m) => {
                 debug!("Got message");
@@ -542,14 +540,9 @@ pub async fn start_consumer<'a>(
                     }
                 }
 
+                let res = s.processor.process_message(m).await;
                 s.received += 1;
-                if let Some(count) = s.count {
-                    if s.received >= count - 1 {
-                        debug!("Exiting after {} messages processed", s.received);
-                        return None;
-                    }
-                }
-                Some((s.processor.process_message(m).await, s))
+                Some((res, s))
             }
             Err(err) => match err {
                 KafkaError::PartitionEOF(current_partition) if s.exit_on_last => {

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
@@ -83,6 +84,10 @@ struct Cli {
     #[arg(short = 'X', long, global = true)]
     rdkafka_options: Option<Vec<String>>,
 
+    /// Bootstrap brokers, comma separated (i.e. equivalent to `-X bootstrap.servers=serv1:port1,serv2:port2`)
+    #[arg(short = 'b', long, global = true)]
+    brokers: Option<String>,
+
     /// Enable verbose logging, can be repeated for more verbosity up to 5 times
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
@@ -127,15 +132,25 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(opts) = cli.rdkafka_options {
         for raw_option in opts {
-            let (k, v) = KafkaConfig::parse_option(raw_option)?;
+            let (k, v) =
+                KafkaConfig::parse_option(raw_option).context("Failed to parse rdkafka option")?;
             config.0.insert(k, v);
         }
+    }
+    if let Some(brokers) = cli.brokers {
+        config.0.insert("bootstrap.servers".to_string(), brokers);
     }
     let client_config = ClientConfig::from(config);
 
     let mut descriptor_pool = DescriptorPool::new();
-    let b = Bytes::from(read(cli.file_descriptors).await?);
-    descriptor_pool.decode_file_descriptor_set(b)?;
+    let b = Bytes::from(
+        read(cli.file_descriptors)
+            .await
+            .context("Failed to read file descriptors")?,
+    );
+    descriptor_pool
+        .decode_file_descriptor_set(b)
+        .context("Failed to decode file descriptor set")?;
 
     match cli.command {
         Command::Consume(args) => {
@@ -168,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
             select! {
                 res = stream.forward(serialized) => {
                     match res {
-                        Ok(()) => info!("Consumed exited successfully"),
+                        Ok(()) => info!("Consumer exited successfully"),
                         Err(err) => error!("Consumer exited with an error: {err}"),
                     }
                 },
