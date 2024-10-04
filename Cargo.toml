@@ -1,12 +1,12 @@
 [package]
 name = "milena"
-version = "0.1.5"
+version = "0.1.7"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "zstd", "gssapi"] }
+rdkafka = { version = "0.36", features = ["cmake-build", "ssl-vendored", "zstd", "libz-static", "gssapi-vendored"] }
 anyhow = "1.0"
 tokio = { version = "1.33.0", features = ["full"] }
 log = "0.4.8"
