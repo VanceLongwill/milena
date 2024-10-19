@@ -327,19 +327,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1462739cb27611015575c0c11df5df7601141071f07518d56fcc1be504cbec97"
 
 [[package]]
-name = "cmake"
-version = "0.1.51"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb1e43aa7fd152b1f968787f7dbcdeb306d1867ff373c69955211876c053f91a"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fd119d74b830634cea2a0f58bbd0d54540518a14397557951e79340abc28c0"
+
+[[package]]
+name = "curl-sys"
+version = "0.4.72+curl-8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29cbdc8314c447d11e8fd156dcdd031d9e02a7a976163e396b548c03153bc9ea"
+dependencies = [
+ "cc",
+ "libc",
+ "libz-sys",
+ "openssl-sys",
+ "pkg-config",
+ "vcpkg",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "duct"
@@ -728,6 +734,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "krb5-src"
+version = "0.3.3+1.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f5dae230b7334f85b6a968d8b0549c39e3b6ba11e973d62f4c81bb37cdf73af"
+dependencies = [
+ "duct",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.158"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -775,7 +790,7 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 
 [[package]]
 name = "milena"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1145,7 +1160,7 @@ version = "4.7.0+2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55e0d2f9ba6253f6ec72385e453294f8618e9e15c2c6aba2a5c01ccf9622d615"
 dependencies = [
- "cmake",
+ "curl-sys",
  "libc",
  "libz-sys",
  "num_enum",
@@ -1219,6 +1234,7 @@ checksum = "05f2a7f7efd9fc98b3a9033272df10709f5ee3fa0eabbd61a527a3a1ed6bd3c6"
 dependencies = [
  "cc",
  "duct",
+ "krb5-src",
  "libc",
  "pkg-config",
 ]
