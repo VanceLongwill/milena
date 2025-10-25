@@ -38,19 +38,17 @@ jobs:
             build-essential pkg-config cmake \
             libssl-dev libsasl2-dev librdkafka-dev \
             libzstd-dev zlib1g-dev
-          # Prefer dynamic linking for librdkafka
-          echo "RDKAFKA_BUILD_STATIC=0" >> "$GITHUB_ENV"
+          # Workaround CMake 4.x policy removal for vendored builds
+          echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> "$GITHUB_ENV"
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           brew update
-          brew install pkg-config librdkafka cyrus-sasl openssl@3 zstd || true
+          # These help both vendored and non-vendored paths
+          brew install pkg-config openssl@3 zstd cyrus-sasl librdkafka || true
 
-          # Ensure pkg-config can discover libs
-          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix zstd)/lib/pkgconfig:$(brew --prefix cyrus-sasl)/lib/pkgconfig:$(brew --prefix librdkafka)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-
-          # OpenSSL hints (often not required but harmless)
+          # OpenSSL hints (harmless if unused)
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> "$GITHUB_ENV"
@@ -58,18 +56,8 @@ jobs:
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> "$GITHUB_ENV"
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> "$GITHUB_ENV"
 
-          # Force dynamic linking so rdkafka-sys uses pkg-config (no vendored CMake)
-          echo "RDKAFKA_BUILD_STATIC=0" >> "$GITHUB_ENV"
-          echo "LIBRDKAFKA_STATIC=0" >> "$GITHUB_ENV"
-          echo "LIBRDKAFKA_BUILD_STATIC=0" >> "$GITHUB_ENV"
-
-      - name: Verify pkg-config sees libraries (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          pkg-config --modversion rdkafka
-          pkg-config --cflags --libs rdkafka
-          pkg-config --modversion libsasl2
-          pkg-config --modversion libzstd || true
+          # Workaround CMake 4.x policy removal for vendored builds
+          echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> "$GITHUB_ENV"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -108,7 +96,8 @@ jobs:
           PKG_NAME="${BIN_NAME}_${VERSION}_${OS}_${ARCH}.tar.gz"
           tar -C "target/${TARGET}/release" -czf "${OUTDIR}/${PKG_NAME}" "${BIN_NAME}"
 
-          # Emit a per-asset checksum (optional but handy)
+          # Per-asset checksum (handy for debugging). The combined file
+          # is generated in the release job.
           if command -v sha256sum >/dev/null 2>&1; then
             (cd "${OUTDIR}" && sha256sum "${PKG_NAME}" > "${PKG_NAME}.sha256")
           else
@@ -134,78 +123,3 @@ jobs:
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build & push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  release:
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-    needs: [build-binaries, docker]
-    permissions:
-      contents: write
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-
-      - name: Build combined SHA256SUMS (HashiCorp-style)
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-
-          cd dist
-          TARBALLS=$(find . -type f -name "*.tar.gz" | sort)
-          : > "milena_${VERSION}_SHA256SUMS"
-
-          if command -v sha256sum >/dev/null 2>&1; then
-            for f in $TARBALLS; do
-              sha256sum "$f" | awk '{print $1"  "substr($0,index($0,$2))}' >> "milena_${VERSION}_SHA256SUMS"
-            done
-          else
-            for f in $TARBALLS; do
-              shasum -a 256 "$f" | awk '{print $1"  "substr($0,index($0,$2))}' >> "milena_${VERSION}_SHA256SUMS"
-            done
-          fi
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          files: |
-            dist/**/*.tar.gz
-            dist/milena_${{ env.VERSION }}_SHA256SUMS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
