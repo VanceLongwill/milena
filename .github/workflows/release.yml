@@ -1,9 +1,9 @@
-name: Release
+name: Release on tag (binaries + Docker)
 
 on:
   push:
     tags:
-      - '*'          # Run on all tags
+      - '*'
   workflow_dispatch:
 
 env:
@@ -21,9 +21,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
+          - os: macos-14       # Apple Silicon host for arm64
             target: aarch64-apple-darwin
-          - os: macos-latest
+          - os: macos-13       # Intel host for x86_64
             target: x86_64-apple-darwin
 
     steps:
@@ -42,10 +42,12 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew update
-          brew install librdkafka || true
-          # If OpenSSL pathing fails, uncomment:
-          # echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-          # echo "OPENSSL_LIBRARIES=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          brew install pkg-config cyrus-sasl librdkafka openssl@3 || true
+          # Ensure pkg-config can find libsasl2 provided by cyrus-sasl
+          echo "PKG_CONFIG_PATH=$(brew --prefix cyrus-sasl)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+          # OpenSSL include/lib hints (often not required, but harmless)
+          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -68,7 +70,6 @@ jobs:
           VERSION="${TAG#v}"                    # strip leading v if present
           TARGET="${{ matrix.target }}"
 
-          # Map Rust target triple -> os/arch like hashicorp (darwin/linux, amd64/arm64)
           case "${TARGET}" in
             x86_64-unknown-linux-gnu) OS="linux";  ARCH="amd64" ;;
             aarch64-apple-darwin)     OS="darwin"; ARCH="arm64" ;;
@@ -85,7 +86,6 @@ jobs:
           PKG_NAME="${BIN_NAME}_${VERSION}_${OS}_${ARCH}.tar.gz"
           tar -C "target/${TARGET}/release" -czf "${OUTDIR}/${PKG_NAME}" "${BIN_NAME}"
 
-          # Generate per-asset checksum lines (will be aggregated later)
           if command -v sha256sum >/dev/null 2>&1; then
             (cd "${OUTDIR}" && sha256sum "${PKG_NAME}" > "${PKG_NAME}.sha256")
           else
@@ -113,7 +113,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKER_IMAGE }}
+          images: ${{ env.DOCTOR_IMAGE }}
           tags: |
             type=ref,event=tag
             type=raw,value=latest
@@ -160,7 +160,6 @@ jobs:
           VERSION="${TAG#v}"
 
           cd dist
-          # Collect only the tarballs at any depth
           TARBALLS=$(find . -type f -name "*.tar.gz" | sort)
           : > "milena_${VERSION}_SHA256SUMS"
 
@@ -174,9 +173,6 @@ jobs:
             done
           fi
 
-          echo "Wrote milena_${VERSION}_SHA256SUMS"
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -186,6 +182,6 @@ jobs:
           prerelease: false
           files: |
             dist/**/*.tar.gz
-            dist/milena_${{ env.VERSION }}_SHA256SUMS
+            dist/milena_${{ github.ref_name#v }}_SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
