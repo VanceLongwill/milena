@@ -21,9 +21,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-14       # Apple Silicon host for arm64
+          - os: macos-14         # Apple Silicon host for arm64
             target: aarch64-apple-darwin
-          - os: macos-13       # Intel host for x86_64
+          - os: macos-13         # Intel host for x86_64
             target: x86_64-apple-darwin
 
     steps:
@@ -36,18 +36,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential pkg-config cmake \
-            libssl-dev libsasl2-dev librdkafka-dev
+            libssl-dev libsasl2-dev librdkafka-dev \
+            libzstd-dev zlib1g-dev
+          # Prefer dynamic link on Linux too (simpler + consistent)
+          echo "RDKAFKA_BUILD_STATIC=0" >> $GITHUB_ENV
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           brew update
-          brew install pkg-config cyrus-sasl librdkafka openssl@3 || true
-          # Ensure pkg-config can find libsasl2 provided by cyrus-sasl
-          echo "PKG_CONFIG_PATH=$(brew --prefix cyrus-sasl)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
-          # OpenSSL include/lib hints (often not required, but harmless)
+          brew install pkg-config librdkafka cyrus-sasl openssl@3 zstd || true
+
+          # Ensure pkg-config can find all the formulae
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix zstd)/lib/pkgconfig:$(brew --prefix cyrus-sasl)/lib/pkgconfig:$(brew --prefix librdkafka)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+
+          # Help openssl-sys on macOS
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+
+          # Force dynamic linking so rdkafka-sys uses pkg-config and DOES NOT vendor (no cmake path)
+          echo "RDKAFKA_BUILD_STATIC=0" >> $GITHUB_ENV
+          echo "LIBRDKAFKA_STATIC=0" >> $GITHUB_ENV
+          echo "LIBRDKAFKA_BUILD_STATIC=0" >> $GITHUB_ENV
+
+      - name: Verify pkg-config sees libraries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pkg-config --modversion rdkafka
+          pkg-config --cflags --libs rdkafka
+          pkg-config --modversion libsasl2
+          pkg-config --modversion libssl || true
+          pkg-config --modversion libzstd || true
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -66,8 +89,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"              # e.g. v1.2.3 or 1.2.3
-          VERSION="${TAG#v}"                    # strip leading v if present
+          TAG="${GITHUB_REF_NAME}"          # v1.2.3 or 1.2.3
+          VERSION="${TAG#v}"                # strip leading v if present
           TARGET="${{ matrix.target }}"
 
           case "${TARGET}" in
@@ -113,7 +136,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCTOR_IMAGE }}
+          images: ${{ env.DOCKER_IMAGE }}
           tags: |
             type=ref,event=tag
             type=raw,value=latest
