@@ -49,6 +49,7 @@ jobs:
             os: ubuntu-latest
             platform: linux
             arch: arm64
+            cross: true
           - target: x86_64-apple-darwin
             os: macos-13
             platform: darwin
@@ -68,10 +69,15 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.cross
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake openssl@3 zstd
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -95,6 +101,9 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: ${{ matrix.cross && '1' || '' }}
+          OPENSSL_DIR: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/openssl@3' || '' }}
+          OPENSSL_NO_VENDOR: ${{ runner.os == 'macOS' && '1' || '' }}
 
       - name: Prepare binary
         run: |
