@@ -55,6 +55,24 @@ jobs:
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
+      - name: Create Cross.toml
+        run: |
+          cat > Cross.toml << 'EOF'
+          [target.x86_64-unknown-linux-gnu]
+          pre-build = [
+              "dpkg --add-architecture amd64",
+              "apt-get update",
+              "apt-get install -y libsasl2-dev:amd64 libssl-dev:amd64 pkg-config"
+          ]
+
+          [target.aarch64-unknown-linux-gnu]
+          pre-build = [
+              "dpkg --add-architecture arm64",
+              "apt-get update",
+              "apt-get install -y libsasl2-dev:arm64 libssl-dev:arm64 pkg-config"
+          ]
+          EOF
+
       - name: Build binary
         run: cross build --release --target ${{ matrix.target }}
 
@@ -92,7 +110,34 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install cmake openssl@3 zstd
+          brew install cmake openssl@3 zstd cyrus-sasl
+          # Force link openssl@3
+          brew link openssl@3 --force || true
+          
+      - name: Setup environment
+        run: |
+          # Set up paths for both Intel and Apple Silicon Macs
+          BREW_PREFIX=$(brew --prefix)
+          OPENSSL_PATH="$BREW_PREFIX/opt/openssl@3"
+          
+          echo "$BREW_PREFIX/bin" >> $GITHUB_PATH
+          echo "CMAKE=$BREW_PREFIX/bin/cmake" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=$OPENSSL_PATH" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$OPENSSL_PATH/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_PATH/include" >> $GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$OPENSSL_PATH/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
+          
+          # Verify the paths exist
+          echo "Homebrew prefix: $BREW_PREFIX"
+          echo "OpenSSL path: $OPENSSL_PATH"
+          ls -la "$OPENSSL_PATH/" || echo "OpenSSL directory not found"
+          ls -la "$OPENSSL_PATH/include" || echo "OpenSSL include directory not found"
+          
+      - name: Verify CMake version
+        run: |
+          which cmake
+          cmake --version
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -104,10 +149,10 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build binary
-        run: cargo build --release
-        env:
-          OPENSSL_DIR: /usr/local/opt/openssl@3
-          OPENSSL_NO_VENDOR: 1
+        run: |
+          echo "OPENSSL_DIR is: $OPENSSL_DIR"
+          echo "PATH is: $PATH"
+          cargo build --release
 
       - name: Prepare binary
         run: |
