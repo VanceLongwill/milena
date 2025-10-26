@@ -116,7 +116,20 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install cmake openssl@3 zstd cyrus-sasl
+          # Install dependencies
+          brew install openssl@3 zstd cyrus-sasl
+          
+          # Install a compatible CMake version (3.x series)
+          # The rdkafka-sys v4.7.0 bundles librdkafka that requires CMake < 4.0
+          brew uninstall --ignore-dependencies cmake || true
+          brew install cmake || (
+            # If cmake 4.x gets installed by default, try to get 3.x
+            curl -L -o /tmp/cmake.tar.gz https://github.com/Kitware/CMake/releases/download/v3.29.8/cmake-3.29.8-macos-universal.tar.gz
+            cd /tmp && tar xzf cmake.tar.gz
+            sudo mkdir -p /usr/local/cmake
+            sudo cp -R cmake-3.29.8-macos-universal/CMake.app/Contents/* /usr/local/cmake/
+          )
+          
           # Force link openssl@3
           brew link openssl@3 --force || true
 
