@@ -126,19 +126,36 @@ jobs:
       - name: Build binary
         run: |
           # Ensure Homebrew binaries are first in PATH
-          export PATH="$(brew --prefix)/bin:$PATH"
+          BREW_PREFIX=$(brew --prefix)
+          export PATH="$BREW_PREFIX/bin:$PATH"
           
           # Set OpenSSL paths
-          BREW_PREFIX=$(brew --prefix)
           export OPENSSL_DIR="$BREW_PREFIX/opt/openssl@3"
           export OPENSSL_LIB_DIR="$OPENSSL_DIR/lib"
           export OPENSSL_INCLUDE_DIR="$OPENSSL_DIR/include"
           export OPENSSL_NO_VENDOR=1
           export PKG_CONFIG_PATH="$OPENSSL_DIR/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig"
           
+          # Explicitly set CMAKE environment variables for the build system
+          export CMAKE="$BREW_PREFIX/bin/cmake"
+          export HOST_CMAKE="$BREW_PREFIX/bin/cmake"
+          
+          # Determine the target architecture
+          TARGET_ARCH=$(uname -m)
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            export CMAKE_x86_64_apple_darwin="$BREW_PREFIX/bin/cmake"
+          else
+            export CMAKE_aarch64_apple_darwin="$BREW_PREFIX/bin/cmake"
+          fi
+          
           # Verify cmake
           echo "Using cmake: $(which cmake)"
+          echo "CMAKE env var: $CMAKE"
+          echo "Target arch: $TARGET_ARCH"
           cmake --version
+          
+          # Clear hash table to ensure new cmake is found
+          hash -r
           
           # Build
           cargo build --release
