@@ -113,31 +113,6 @@ jobs:
           brew install cmake openssl@3 zstd cyrus-sasl
           # Force link openssl@3
           brew link openssl@3 --force || true
-          
-      - name: Setup environment
-        run: |
-          # Set up paths for both Intel and Apple Silicon Macs
-          BREW_PREFIX=$(brew --prefix)
-          OPENSSL_PATH="$BREW_PREFIX/opt/openssl@3"
-          
-          echo "$BREW_PREFIX/bin" >> $GITHUB_PATH
-          echo "CMAKE=$BREW_PREFIX/bin/cmake" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=$OPENSSL_PATH" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$OPENSSL_PATH/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$OPENSSL_PATH/include" >> $GITHUB_ENV
-          echo "OPENSSL_NO_VENDOR=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$OPENSSL_PATH/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
-          
-          # Verify the paths exist
-          echo "Homebrew prefix: $BREW_PREFIX"
-          echo "OpenSSL path: $OPENSSL_PATH"
-          ls -la "$OPENSSL_PATH/" || echo "OpenSSL directory not found"
-          ls -la "$OPENSSL_PATH/include" || echo "OpenSSL include directory not found"
-          
-      - name: Verify CMake version
-        run: |
-          which cmake
-          cmake --version
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -150,8 +125,22 @@ jobs:
 
       - name: Build binary
         run: |
-          echo "OPENSSL_DIR is: $OPENSSL_DIR"
-          echo "PATH is: $PATH"
+          # Ensure Homebrew binaries are first in PATH
+          export PATH="$(brew --prefix)/bin:$PATH"
+          
+          # Set OpenSSL paths
+          BREW_PREFIX=$(brew --prefix)
+          export OPENSSL_DIR="$BREW_PREFIX/opt/openssl@3"
+          export OPENSSL_LIB_DIR="$OPENSSL_DIR/lib"
+          export OPENSSL_INCLUDE_DIR="$OPENSSL_DIR/include"
+          export OPENSSL_NO_VENDOR=1
+          export PKG_CONFIG_PATH="$OPENSSL_DIR/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig"
+          
+          # Verify cmake
+          echo "Using cmake: $(which cmake)"
+          cmake --version
+          
+          # Build
           cargo build --release
 
       - name: Prepare binary
