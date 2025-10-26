@@ -18,7 +18,6 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Get version from tag
@@ -26,7 +25,6 @@ jobs:
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           draft: false
@@ -38,7 +36,6 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         include:
           - arch: amd64
@@ -55,38 +52,14 @@ jobs:
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Create Cross.toml
+      - name: Build binary with vendored dependencies
         run: |
-          cat > Cross.toml << 'EOF'
-          [target.x86_64-unknown-linux-gnu]
-          pre-build = [
-              "dpkg --add-architecture amd64",
-              "apt-get update",
-              "apt-get install -y libsasl2-dev:amd64 libssl-dev:amd64 zlib1g-dev:amd64 pkg-config"
-          ]
-
-          [target.aarch64-unknown-linux-gnu]
-          pre-build = [
-              "dpkg --add-architecture arm64",
-              "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y libsasl2-dev:arm64 libssl-dev:arm64 zlib1g-dev:arm64 pkg-config"
-          ]
-          
-          [target.aarch64-unknown-linux-gnu.env]
-          volumes = []
-          passthrough = [
-              "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig",
-              "PKG_CONFIG_ALLOW_CROSS=1"
-          ]
-          EOF
-
-      - name: Build binary
-        run: cross build --release --target ${{ matrix.target }}
+          cross build --release --target ${{ matrix.target }} --features "rdkafka/cmake-build,rdkafka/ssl-vendored,rdkafka/gssapi-vendored,rdkafka/libz-static"
 
       - name: Prepare binary
         run: |
           cd target/${{ matrix.target }}/release
-          strip milena || true
-          chmod +x milena
+          strip milena
           tar czf milena_${{ needs.create-release.outputs.version }}_linux_${{ matrix.arch }}.tar.gz milena
           mv milena_${{ needs.create-release.outputs.version }}_linux_${{ matrix.arch }}.tar.gz $GITHUB_WORKSPACE/
 
@@ -100,7 +73,6 @@ jobs:
     needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         include:
           - arch: amd64
@@ -116,74 +88,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install dependencies
-          brew install openssl@3 zstd cyrus-sasl
-          
-          # Install a compatible CMake version (3.x series)
-          # The rdkafka-sys v4.7.0 bundles librdkafka that requires CMake < 4.0
-          brew uninstall --ignore-dependencies cmake || true
-          brew install cmake || (
-            # If cmake 4.x gets installed by default, try to get 3.x
-            curl -L -o /tmp/cmake.tar.gz https://github.com/Kitware/CMake/releases/download/v3.29.8/cmake-3.29.8-macos-universal.tar.gz
-            cd /tmp && tar xzf cmake.tar.gz
-            sudo mkdir -p /usr/local/cmake
-            sudo cp -R cmake-3.29.8-macos-universal/CMake.app/Contents/* /usr/local/cmake/
-          )
-          
-          # Force link openssl@3
-          brew link openssl@3 --force || true
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          brew install cmake
 
       - name: Build binary
         run: |
-          # Ensure Homebrew binaries are first in PATH
-          BREW_PREFIX=$(brew --prefix)
-          export PATH="$BREW_PREFIX/bin:$PATH"
-          
-          # Set OpenSSL paths
-          export OPENSSL_DIR="$BREW_PREFIX/opt/openssl@3"
-          export OPENSSL_LIB_DIR="$OPENSSL_DIR/lib"
-          export OPENSSL_INCLUDE_DIR="$OPENSSL_DIR/include"
-          export OPENSSL_NO_VENDOR=1
-          export PKG_CONFIG_PATH="$OPENSSL_DIR/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig"
-          
-          # Explicitly set CMAKE environment variables for the build system
-          export CMAKE="$BREW_PREFIX/bin/cmake"
-          export HOST_CMAKE="$BREW_PREFIX/bin/cmake"
-          
-          # Determine the target architecture
-          TARGET_ARCH=$(uname -m)
-          if [ "$TARGET_ARCH" = "x86_64" ]; then
-            export CMAKE_x86_64_apple_darwin="$BREW_PREFIX/bin/cmake"
-          else
-            export CMAKE_aarch64_apple_darwin="$BREW_PREFIX/bin/cmake"
-          fi
-          
-          # Verify cmake
-          echo "Using cmake: $(which cmake)"
-          echo "CMAKE env var: $CMAKE"
-          echo "Target arch: $TARGET_ARCH"
-          cmake --version
-          
-          # Clear hash table to ensure new cmake is found
-          hash -r
-          
-          # Build
-          cargo build --release
+          cargo build --release --features "rdkafka/cmake-build,rdkafka/ssl-vendored,rdkafka/gssapi-vendored,rdkafka/libz-static"
 
       - name: Prepare binary
         run: |
           cd target/release
-          strip milena || true
-          chmod +x milena
+          strip milena
           tar czf milena_${{ needs.create-release.outputs.version }}_darwin_${{ matrix.arch }}.tar.gz milena
           mv milena_${{ needs.create-release.outputs.version }}_darwin_${{ matrix.arch }}.tar.gz $GITHUB_WORKSPACE/
 
